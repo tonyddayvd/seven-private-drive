@@ -22,11 +22,8 @@ export default function InstallPrompt() {
     const isIosDevice = /iphone|ipad|ipod/.test(userAgent);
     setIsIOS(isIosDevice);
 
-    // No iOS ou Android, se não foi fechado nesta sessão, exibe o banner
-    const dismissed = sessionStorage.getItem("seven_install_dismissed");
-    if (!dismissed) {
-      setShowPrompt(true);
-    }
+    // Sempre exibe o banner para quem entra pelo navegador, facilitando a instalação imediata
+    setShowPrompt(true);
 
     // Captura evento de instalação nativa do Chrome / Android
     const handleBeforeInstallPrompt = (e: Event) => {
