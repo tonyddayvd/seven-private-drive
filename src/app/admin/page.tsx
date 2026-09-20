@@ -19,7 +19,9 @@ import {
   ChevronRight,
   Sparkles,
   Settings as SettingsIcon,
-  Check
+  Check,
+  Trash2,
+  AlertTriangle
 } from "lucide-react";
 import { supabase, Client, Ride, MonthlyStatement, Expense, Settings } from "@/lib/supabase";
 import { formatCurrency, formatDateBR, cn } from "@/lib/utils";
@@ -44,6 +46,8 @@ export default function AdminDashboard() {
   const [isRideModalOpen, setIsRideModalOpen] = useState(false);
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
+  const [deletingClient, setDeletingClient] = useState(false);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
 
   // Formulário Configurações de Pix e Perfil
@@ -238,6 +242,30 @@ export default function AdminDashboard() {
     } catch (err) {
       console.error(err);
       alert("Erro ao cadastrar passageiro.");
+    }
+  }
+
+  // Ação de Excluir Passageiro
+  async function handleDeleteClient() {
+    if (!clientToDelete) return;
+    setDeletingClient(true);
+    try {
+      const { error } = await supabase
+        .from("clients")
+        .delete()
+        .eq("id", clientToDelete.id);
+
+      if (error) throw error;
+
+      setClients((prev) => prev.filter((c) => c.id !== clientToDelete.id));
+      setRides((prev) => prev.filter((r) => r.client_id !== clientToDelete.id));
+      setStatements((prev) => prev.filter((s) => s.client_id !== clientToDelete.id));
+      setClientToDelete(null);
+    } catch (err) {
+      console.error(err);
+      alert("Erro ao excluir passageiro.");
+    } finally {
+      setDeletingClient(false);
     }
   }
 
@@ -570,7 +598,7 @@ export default function AdminDashboard() {
                     </p>
                   </div>
 
-                  <div className="pt-2 border-t border-border/60 flex items-center gap-2">
+                  <div className="pt-2 border-t border-border/60 flex items-center gap-1.5">
                     <button
                       onClick={() => copyWhatsAppLink(c)}
                       className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-card hover:bg-zinc-800 border border-border text-[11px] font-semibold text-white transition-all"
@@ -587,6 +615,13 @@ export default function AdminDashboard() {
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
                     </a>
+                    <button
+                      onClick={() => setClientToDelete(c)}
+                      className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-400 transition-all"
+                      title="Excluir Passageiro"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
               );
@@ -923,6 +958,46 @@ export default function AdminDashboard() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CONFIRMAÇÃO DE EXCLUSÃO DE PASSAGEIRO */}
+      {clientToDelete && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-card border border-border w-full max-w-sm rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-500 mx-auto">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+
+            <div className="text-center">
+              <h3 className="text-base font-bold text-white">Excluir Passageiro</h3>
+              <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
+                Tem certeza que deseja excluir o passageiro <span className="font-bold text-white">&quot;{clientToDelete.name}&quot;</span>?
+              </p>
+              <p className="text-[11px] text-zinc-400 mt-2">
+                Todas as corridas e faturas deste cliente serão removidas do sistema.
+              </p>
+            </div>
+
+            <div className="pt-2 flex gap-2">
+              <button
+                type="button"
+                disabled={deletingClient}
+                onClick={() => setClientToDelete(null)}
+                className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-zinc-300 text-xs font-medium hover:bg-zinc-800"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={deletingClient}
+                onClick={handleDeleteClient}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all shadow-md shadow-rose-600/20"
+              >
+                {deletingClient ? "Excluindo..." : "Sim, Excluir"}
+              </button>
+            </div>
           </div>
         </div>
       )}
