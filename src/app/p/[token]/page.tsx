@@ -629,9 +629,31 @@ export default function PassengerPortal() {
                     </div>
                   </div>
 
-                  <span className="text-sm font-bold text-white">
-                    {formatCurrency(Number(ride.amount))}
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-bold text-white">
+                      {formatCurrency(Number(ride.amount))}
+                    </span>
+
+                    {/* Se a corrida foi lançada pelo motorista e ainda está pendente de confirmação pelo passageiro */}
+                    {ride.status === "pendente_confirmacao" && ride.created_by === "driver" && (
+                      <button
+                        onClick={async () => {
+                          try {
+                            await supabase.from("rides").update({ status: "confirmada" }).eq("id", ride.id);
+                            setRides((prev) =>
+                              prev.map((r) => (r.id === ride.id ? { ...r, status: "confirmada" } : r))
+                            );
+                          } catch (err) {
+                            console.error(err);
+                          }
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-zinc-950 text-xs font-bold transition-all"
+                        title="Confirmar que você realizou esta corrida"
+                      >
+                        Confirmar
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

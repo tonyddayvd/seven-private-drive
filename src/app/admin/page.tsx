@@ -17,7 +17,9 @@ import {
   Shield,
   Search,
   ChevronRight,
-  Sparkles
+  Sparkles,
+  Settings as SettingsIcon,
+  Check
 } from "lucide-react";
 import { supabase, Client, Ride, MonthlyStatement, Expense, Settings } from "@/lib/supabase";
 import { formatCurrency, formatDateBR, cn } from "@/lib/utils";
@@ -41,7 +43,16 @@ export default function AdminDashboard() {
   const [isClientModalOpen, setIsClientModalOpen] = useState(false);
   const [isRideModalOpen, setIsRideModalOpen] = useState(false);
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
+
+  // Formulário Configurações de Pix e Perfil
+  const [pixDriverName, setPixDriverName] = useState("");
+  const [pixType, setPixType] = useState("Chave Aleatória");
+  const [pixKeyVal, setPixKeyVal] = useState("");
+  const [adminPassVal, setAdminPassVal] = useState("");
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [settingsSavedSuccess, setSettingsSavedSuccess] = useState(false);
 
   // Formulário Novo Passageiro
   const [newClientName, setNewClientName] = useState("");
@@ -53,12 +64,13 @@ export default function AdminDashboard() {
   const [expCategory, setExpCategory] = useState<"combustivel" | "manutencao" | "seguro" | "alimentacao" | "outros">("combustivel");
   const [expAmount, setExpAmount] = useState("");
 
-  // Formulário Lançar Corrida Manual
+  // Formulário Lançar Corrida pelo Motorista
   const [rideClientId, setRideClientId] = useState("");
   const [rideDate, setRideDate] = useState(format(new Date(), "yyyy-MM-dd"));
   const [rideAmount, setRideAmount] = useState("");
   const [rideOrigin, setRideOrigin] = useState("");
   const [rideDest, setRideDest] = useState("");
+  const [rideInitialStatus, setRideInitialStatus] = useState<"confirmada" | "pendente_confirmacao">("pendente_confirmacao");
 
   useEffect(() => {
     const isAuth = sessionStorage.getItem("seven_admin_auth");
@@ -74,7 +86,6 @@ export default function AdminDashboard() {
     e.preventDefault();
     setAuthError(false);
 
-    // Carrega senha cadastrada ou usa 123456 por padrão
     const { data: setts } = await supabase
       .from("settings")
       .select("admin_password")
@@ -112,11 +123,50 @@ export default function AdminDashboard() {
       if (ridesData) setRides(ridesData);
       if (stmtsData) setStatements(stmtsData);
       if (expensesData) setExpenses(expensesData);
-      if (settsData) setSettings(settsData);
+      if (settsData) {
+        setSettings(settsData);
+        setPixDriverName(settsData.driver_name || "");
+        setPixType(settsData.pix_key_type || "Chave Aleatória");
+        setPixKeyVal(settsData.pix_key || "");
+        setAdminPassVal(settsData.admin_password || "123456");
+      }
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Salvar Configurações de Pix e Senha
+  async function handleSaveSettings(e: React.FormEvent) {
+    e.preventDefault();
+    setSavingSettings(true);
+    try {
+      const { data, error } = await supabase
+        .from("settings")
+        .upsert({
+          id: "config-default",
+          driver_name: pixDriverName,
+          pix_key_type: pixType,
+          pix_key: pixKeyVal,
+          admin_password: adminPassVal,
+          updated_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      setSettings(data);
+      setSettingsSavedSuccess(true);
+      setTimeout(() => {
+        setSettingsSavedSuccess(false);
+        setIsSettingsModalOpen(false);
+      }, 1500);
+    } catch (err) {
+      console.error(err);
+      alert("Erro ao salvar configurações.");
+    } finally {
+      setSavingSettings(false);
     }
   }
 
@@ -166,7 +216,6 @@ export default function AdminDashboard() {
     if (!newClientName) return;
 
     try {
-      // Gera token aleatório amigável
       const rawToken = Math.random().toString(36).substring(2, 10) + Date.now().toString(36).slice(-4);
 
       const { data: newC, error } = await supabase
@@ -222,7 +271,7 @@ export default function AdminDashboard() {
     }
   }
 
-  // Ação de Lançar Corrida Manual pelo Motorista
+  // Ação de Lançar Corrida pelo Motorista (pode ser enviada para confirmação do passageiro ou direto confirmada)
   async function handleCreateManualRide(e: React.FormEvent) {
     e.preventDefault();
     if (!rideClientId || !rideAmount) return;
@@ -234,10 +283,10 @@ export default function AdminDashboard() {
         .insert({
           client_id: rideClientId,
           ride_date: rideDate,
-          origin: rideOrigin || "Lançamento Motorista",
-          destination: rideDest || "Lançamento Motorista",
+          origin: rideOrigin || "Lançado pelo Motorista",
+          destination: rideDest || "Lançado pelo Motorista",
           amount: parsedAmount,
-          status: "confirmada", // já entra confirmada pois é feita pelo motorista
+          status: rideInitialStatus,
           created_by: "driver",
         })
         .select()
@@ -259,7 +308,7 @@ export default function AdminDashboard() {
   function copyWhatsAppLink(client: Client) {
     const originUrl = typeof window !== "undefined" ? window.location.origin : "";
     const clientUrl = `${originUrl}/p/${client.token}`;
-    const text = `Olá, ${client.name}! Segue seu link exclusivo para conferir suas corridas e fatura no Seven Private Drive: ${clientUrl}`;
+    const text = `Olá, ${client.name}! 👋 Segue seu portal exclusivo Seven Private Drive para acompanhar suas viagens e faturas: ${clientUrl}`;
 
     navigator.clipboard.writeText(text);
     setCopiedToken(client.token);
@@ -325,6 +374,14 @@ export default function AdminDashboard() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Botão Configurações Pix */}
+            <button
+              onClick={() => setIsSettingsModalOpen(true)}
+              className="p-2 rounded-lg bg-surface hover:bg-zinc-800 border border-border text-zinc-300 hover:text-white transition-all"
+              title="Configurações de Pix e Motorista"
+            >
+              <SettingsIcon className="w-4 h-4 text-primary" />
+            </button>
             <button
               onClick={() => setIsExpenseModalOpen(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface border border-border text-zinc-300 hover:text-white text-xs font-medium"
@@ -337,16 +394,36 @@ export default function AdminDashboard() {
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary-hover text-zinc-950 text-xs font-bold shadow-md shadow-primary/10"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>Nova Corrida</span>
+              <span>Lançar Corrida</span>
             </button>
           </div>
         </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-4 pt-4 space-y-6">
+        {/* Banner Pix Ativo */}
+        <div className="bg-surface border border-border/80 rounded-xl p-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+              <DollarSign className="w-4 h-4" />
+            </div>
+            <div>
+              <p className="text-xs font-bold text-white">Chave Pix Cadastrada para Recebimento:</p>
+              <p className="text-[11px] text-zinc-400">
+                {settings?.pix_key ? `${settings.pix_key_type}: ${settings.pix_key} (${settings.driver_name})` : "Nenhum Pix configurado"}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setIsSettingsModalOpen(true)}
+            className="text-xs text-primary hover:underline font-semibold"
+          >
+            Editar Pix
+          </button>
+        </div>
+
         {/* DASHBOARD FINANCEIRO EXECUTIVO */}
         <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {/* Faturamento Bruto Previsto */}
           <div className="bg-card border border-border p-4 rounded-xl relative overflow-hidden">
             <span className="text-xs uppercase font-medium tracking-wider text-zinc-400 flex items-center gap-1.5">
               <DollarSign className="w-3.5 h-3.5 text-primary" /> Faturamento Previsto
@@ -357,7 +434,6 @@ export default function AdminDashboard() {
             <p className="text-[11px] text-zinc-400 mt-1">Soma de corridas confirmadas</p>
           </div>
 
-          {/* Despesas Operacionais */}
           <div className="bg-card border border-border p-4 rounded-xl relative overflow-hidden">
             <span className="text-xs uppercase font-medium tracking-wider text-zinc-400 flex items-center gap-1.5">
               <Fuel className="w-3.5 h-3.5 text-rose-400" /> Despesas Operacionais
@@ -368,7 +444,6 @@ export default function AdminDashboard() {
             <p className="text-[11px] text-zinc-400 mt-1">Combustível, seguro e manutenções</p>
           </div>
 
-          {/* Lucro Líquido Real */}
           <div className="bg-card border border-border p-4 rounded-xl relative overflow-hidden">
             <span className="text-xs uppercase font-medium tracking-wider text-zinc-400 flex items-center gap-1.5">
               <TrendingUp className="w-3.5 h-3.5 text-emerald-400" /> Lucro Líquido Real
@@ -380,14 +455,14 @@ export default function AdminDashboard() {
           </div>
         </section>
 
-        {/* FILA DE DUPLA CHECAGEM (CORRIDAS PENDENTES DE APROVAÇÃO) */}
+        {/* FILA DE DUPLA CHECAGEM */}
         <section className="bg-card border border-border rounded-2xl p-4">
           <div className="flex items-center justify-between mb-3">
             <div>
               <h2 className="text-sm font-bold text-white flex items-center gap-2">
                 <Clock className="w-4 h-4 text-amber-400" /> Fila de Dupla Checagem
               </h2>
-              <p className="text-xs text-zinc-400">Corridas solicitadas pelos passageiros no calendário</p>
+              <p className="text-xs text-zinc-400">Corridas aguardando confirmação (solicitadas pelo passageiro ou lançadas por você)</p>
             </div>
             <span className="text-xs px-2.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 font-semibold">
               {pendingCheckRides.length} pendente(s)
@@ -396,7 +471,7 @@ export default function AdminDashboard() {
 
           {pendingCheckRides.length === 0 ? (
             <div className="text-center py-6 text-zinc-400 text-xs bg-surface/50 rounded-xl border border-border/50">
-              ✓ Nenhuma corrida aguardando aprovação no momento.
+              ✓ Nenhuma corrida pendente de aprovação no momento.
             </div>
           ) : (
             <div className="space-y-2">
@@ -412,6 +487,9 @@ export default function AdminDashboard() {
                         <span className="text-xs font-bold text-white">{client?.name || "Passageiro"}</span>
                         <span className="text-[10px] bg-card px-2 py-0.5 rounded border border-border text-zinc-300">
                           {formatDateBR(ride.ride_date)}
+                        </span>
+                        <span className="text-[10px] text-zinc-400">
+                          (Lançado por: {ride.created_by === "driver" ? "Motorista" : "Passageiro"})
                         </span>
                       </div>
                       <p className="text-xs text-zinc-400 mt-0.5">
@@ -509,6 +587,203 @@ export default function AdminDashboard() {
         </section>
       </main>
 
+      {/* MODAL: CONFIGURAÇÕES DE PIX E PERFIL DO MOTORISTA */}
+      {isSettingsModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-card border border-border w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <SettingsIcon className="w-4 h-4 text-primary" /> Configurações de Recebimento
+              </h3>
+              <button onClick={() => setIsSettingsModalOpen(false)} className="text-zinc-400 hover:text-white text-sm">✕</button>
+            </div>
+
+            <form onSubmit={handleSaveSettings} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1">Seu Nome / Nome de Exibição</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ex: Tony Silva"
+                  value={pixDriverName}
+                  onChange={(e) => setPixDriverName(e.target.value)}
+                  className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-sm focus:border-primary focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-300 mb-1">Tipo de Chave Pix</label>
+                  <select
+                    value={pixType}
+                    onChange={(e) => setPixType(e.target.value)}
+                    className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-xs focus:border-primary focus:outline-none"
+                  >
+                    <option value="CPF">CPF</option>
+                    <option value="CNPJ">CNPJ</option>
+                    <option value="Celular">Celular</option>
+                    <option value="E-mail">E-mail</option>
+                    <option value="Chave Aleatória">Chave Aleatória</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-300 mb-1">Chave Pix Real *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Sua chave Pix"
+                    value={pixKeyVal}
+                    onChange={(e) => setPixKeyVal(e.target.value)}
+                    className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-xs focus:border-primary focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1">Senha Master de Acesso Admin</label>
+                <input
+                  type="text"
+                  required
+                  value={adminPassVal}
+                  onChange={(e) => setAdminPassVal(e.target.value)}
+                  className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-xs focus:border-primary focus:outline-none"
+                />
+              </div>
+
+              {settingsSavedSuccess && (
+                <p className="text-xs text-emerald-400 font-semibold text-center flex items-center justify-center gap-1">
+                  <Check className="w-3.5 h-3.5" /> Dados de Pix atualizados com sucesso!
+                </p>
+              )}
+
+              <div className="pt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsSettingsModalOpen(false)}
+                  className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-zinc-300 text-xs font-medium"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingSettings}
+                  className="flex-1 py-2.5 rounded-xl bg-primary hover:bg-primary-hover text-zinc-950 text-xs font-bold"
+                >
+                  {savingSettings ? "Salvando..." : "Salvar Configurações"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: LANÇAR CORRIDA PELO MOTORISTA */}
+      {isRideModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-card border border-border w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div>
+                <h3 className="text-base font-bold text-white">Lançar Corrida (Motorista)</h3>
+                <p className="text-xs text-zinc-400">Caso o passageiro tenha esquecido de registrar a viagem</p>
+              </div>
+              <button onClick={() => setIsRideModalOpen(false)} className="text-zinc-400 hover:text-white text-sm">✕</button>
+            </div>
+
+            <form onSubmit={handleCreateManualRide} className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1">Passageiro *</label>
+                <select
+                  required
+                  value={rideClientId}
+                  onChange={(e) => setRideClientId(e.target.value)}
+                  className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-sm focus:border-primary focus:outline-none"
+                >
+                  <option value="">Selecione o passageiro</option>
+                  {clients.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-300 mb-1">Data da Corrida *</label>
+                  <input
+                    type="date"
+                    required
+                    value={rideDate}
+                    onChange={(e) => setRideDate(e.target.value)}
+                    className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-sm focus:border-primary focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-300 mb-1">Valor (R$) *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: 40,00"
+                    value={rideAmount}
+                    onChange={(e) => setRideAmount(e.target.value)}
+                    className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-sm focus:border-primary focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-300 mb-1">Origem (Opcional)</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Trabalho"
+                    value={rideOrigin}
+                    onChange={(e) => setRideOrigin(e.target.value)}
+                    className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-xs focus:border-primary focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-300 mb-1">Destino (Opcional)</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Casa"
+                    value={rideDest}
+                    onChange={(e) => setRideDest(e.target.value)}
+                    className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-xs focus:border-primary focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1">Status Inicial da Corrida</label>
+                <select
+                  value={rideInitialStatus}
+                  onChange={(e: any) => setRideInitialStatus(e.target.value)}
+                  className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-xs focus:border-primary focus:outline-none"
+                >
+                  <option value="pendente_confirmacao">Aguardar confirmação do passageiro no portal</option>
+                  <option value="confirmada">Já lançar confirmada</option>
+                </select>
+              </div>
+
+              <div className="pt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsRideModalOpen(false)}
+                  className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-zinc-300 text-xs font-medium"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 rounded-xl bg-primary hover:bg-primary-hover text-zinc-950 text-xs font-bold"
+                >
+                  Lançar Corrida
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* MODAL: NOVO PASSAGEIRO */}
       {isClientModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -567,75 +842,6 @@ export default function AdminDashboard() {
                   className="flex-1 py-2.5 rounded-xl bg-primary hover:bg-primary-hover text-zinc-950 text-xs font-bold"
                 >
                   Salvar Passageiro
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL: LANÇAR CORRIDA MANUAL */}
-      {isRideModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-card border border-border w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <h3 className="text-base font-bold text-white">Lançar Corrida (Motorista)</h3>
-              <button onClick={() => setIsRideModalOpen(false)} className="text-zinc-400 hover:text-white text-sm">✕</button>
-            </div>
-
-            <form onSubmit={handleCreateManualRide} className="space-y-3">
-              <div>
-                <label className="block text-xs font-medium text-zinc-300 mb-1">Passageiro *</label>
-                <select
-                  required
-                  value={rideClientId}
-                  onChange={(e) => setRideClientId(e.target.value)}
-                  className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-sm focus:border-primary focus:outline-none"
-                >
-                  <option value="">Selecione o passageiro</option>
-                  {clients.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-xs font-medium text-zinc-300 mb-1">Data *</label>
-                  <input
-                    type="date"
-                    required
-                    value={rideDate}
-                    onChange={(e) => setRideDate(e.target.value)}
-                    className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-sm focus:border-primary focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-zinc-300 mb-1">Valor (R$) *</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Ex: 40,00"
-                    value={rideAmount}
-                    onChange={(e) => setRideAmount(e.target.value)}
-                    className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-sm focus:border-primary focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              <div className="pt-2 flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsRideModalOpen(false)}
-                  className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-zinc-300 text-xs font-medium"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="flex-1 py-2.5 rounded-xl bg-primary hover:bg-primary-hover text-zinc-950 text-xs font-bold"
-                >
-                  Lançar Corrida
                 </button>
               </div>
             </form>
