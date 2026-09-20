@@ -18,7 +18,8 @@ import {
   DollarSign,
   TrendingUp,
   AlertCircle,
-  FileCheck
+  FileCheck,
+  Shield
 } from "lucide-react";
 import { supabase, Client, Ride, MonthlyStatement, Settings } from "@/lib/supabase";
 import { formatCurrency, formatDateBR, cn } from "@/lib/utils";
