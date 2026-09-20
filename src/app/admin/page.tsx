@@ -374,6 +374,14 @@ export default function AdminDashboard() {
           </div>
 
           <div className="flex items-center gap-2">
+            <a
+              href="/"
+              className="p-2 rounded-lg bg-surface hover:bg-zinc-800 border border-border text-zinc-400 hover:text-white transition-all text-xs"
+              title="Ir para tela inicial / portal"
+            >
+              <Car className="w-4 h-4" />
+            </a>
+
             {/* Botão Configurações Pix */}
             <button
               onClick={() => setIsSettingsModalOpen(true)}

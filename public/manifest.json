@@ -27,5 +27,21 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
+  ],
+  "shortcuts": [
+    {
+      "name": "Painel do Motorista",
+      "short_name": "Motorista",
+      "description": "Acesse a área administrativa do motorista",
+      "url": "/admin",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Portal de Corridas",
+      "short_name": "Minhas Corridas",
+      "description": "Acesse suas corridas do mês",
+      "url": "/",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    }
   ]
 }

@@ -349,13 +349,24 @@ export default function PassengerPortal() {
             </div>
           </div>
 
-          <button
-            onClick={() => setIsPayModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary-hover text-zinc-950 font-semibold text-xs transition-all shadow-md shadow-primary/20"
-          >
-            <CreditCard className="w-3.5 h-3.5" />
-            <span>Pagar Fatura</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <a
+              href="/admin"
+              className="p-1.5 rounded-lg bg-surface hover:bg-zinc-800 border border-border text-zinc-400 hover:text-white transition-all text-xs flex items-center gap-1"
+              title="Acessar Painel do Motorista / Administrador"
+            >
+              <Shield className="w-3.5 h-3.5 text-accent" />
+              <span className="hidden sm:inline text-[10px]">Área Motorista</span>
+            </a>
+
+            <button
+              onClick={() => setIsPayModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary-hover text-zinc-950 font-semibold text-xs transition-all shadow-md shadow-primary/20"
+            >
+              <CreditCard className="w-3.5 h-3.5" />
+              <span>Pagar Fatura</span>
+            </button>
+          </div>
         </div>
       </header>
 
