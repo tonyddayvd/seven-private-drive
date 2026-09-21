@@ -11,12 +11,13 @@ import {
   DollarSign,
   AlertCircle
 } from "lucide-react";
-import { supabase, MonthlyStatement, Client } from "@/lib/supabase";
+import { supabase, MonthlyStatement, Client, Ride } from "@/lib/supabase";
 import { formatCurrency, formatDateBR, cn } from "@/lib/utils";
 
 export default function PaymentAuditPage() {
   const [statements, setStatements] = useState<MonthlyStatement[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
+  const [rides, setRides] = useState<Ride[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Modal de Recusa com Motivo
@@ -31,16 +32,18 @@ export default function PaymentAuditPage() {
   async function loadAuditData() {
     setLoading(true);
     try {
-      const [{ data: stmts }, { data: cls }] = await Promise.all([
+      const [{ data: stmts }, { data: cls }, { data: rds }] = await Promise.all([
         supabase
           .from("monthly_statements")
           .select("*")
           .order("created_at", { ascending: false }),
         supabase.from("clients").select("*"),
+        supabase.from("rides").select("*").order("ride_date", { ascending: true }),
       ]);
 
       if (stmts) setStatements(stmts);
       if (cls) setClients(cls);
+      if (rds) setRides(rds);
     } catch (err) {
       console.error(err);
     } finally {
@@ -60,27 +63,37 @@ export default function PaymentAuditPage() {
         })
         .eq("id", statementId);
 
-      // 2. Marca todas as corridas atreladas como faturadas
+      // 2. Marca todas as corridas atreladas a esta fatura como faturadas
       await supabase
         .from("rides")
         .update({ status: "faturada" })
         .eq("statement_id", statementId);
 
-      // 3. Abre novo ciclo/fatura em aberto para as próximas viagens
-      const client = clients.find((c) => c.id === clientId);
-      const dueDay = client?.billing_due_day || 10;
-      const nextMonth = new Date();
-      nextMonth.setMonth(nextMonth.getMonth() + 1);
-      const nextDue = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`;
+      // 3. Verifica se já existe uma fatura 'em_aberto' para este cliente (por exemplo, de corridas que sobraram no pagamento parcial)
+      const { data: existingOpen } = await supabase
+        .from("monthly_statements")
+        .select("id")
+        .eq("client_id", clientId)
+        .eq("status", "em_aberto")
+        .maybeSingle();
 
-      await supabase.from("monthly_statements").insert({
-        client_id: clientId,
-        reference_month: `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, "0")}`,
-        due_date: nextDue,
-        total_amount: 0,
-        rides_count: 0,
-        status: "em_aberto",
-      });
+      // Só cria uma nova fatura em aberto se não existir nenhuma
+      if (!existingOpen) {
+        const client = clients.find((c) => c.id === clientId);
+        const dueDay = client?.billing_due_day || 10;
+        const nextMonth = new Date();
+        nextMonth.setMonth(nextMonth.getMonth() + 1);
+        const nextDue = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`;
+
+        await supabase.from("monthly_statements").insert({
+          client_id: clientId,
+          reference_month: `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, "0")}`,
+          due_date: nextDue,
+          total_amount: 0,
+          rides_count: 0,
+          status: "em_aberto",
+        });
+      }
 
       loadAuditData();
     } catch (err) {
@@ -152,62 +165,96 @@ export default function PaymentAuditPage() {
             <div className="space-y-3">
               {pendingPayments.map((stmt) => {
                 const client = clients.find((c) => c.id === stmt.client_id);
+                const stmtRides = rides.filter((r) => r.statement_id === stmt.id);
+
                 return (
                   <div
                     key={stmt.id}
-                    className="bg-surface border border-border rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4"
+                    className="bg-surface border border-border rounded-xl p-4 space-y-3"
                   >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-white">{client?.name || "Passageiro"}</span>
-                        <span className="text-[10px] bg-card px-2 py-0.5 rounded border border-border text-zinc-400">
-                          Ref: {stmt.reference_month}
-                        </span>
-                      </div>
-                      <p className="text-xs text-zinc-400 mt-1">
-                        Vencimento da fatura: {formatDateBR(stmt.due_date)}
-                      </p>
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-white">{client?.name || "Passageiro"}</span>
+                          <span className="text-[10px] bg-card px-2 py-0.5 rounded border border-border text-zinc-400">
+                            Ref: {stmt.reference_month}
+                          </span>
+                          <span className="text-[10px] bg-primary/10 border border-primary/20 text-primary px-2 py-0.5 rounded font-semibold">
+                            {stmtRides.length} corrida(s) selecionada(s)
+                          </span>
+                        </div>
+                        <p className="text-xs text-zinc-400 mt-1">
+                          Vencimento da fatura: {formatDateBR(stmt.due_date)}
+                        </p>
 
-                      {stmt.receipt_url && (
-                        <a
-                          href={stmt.receipt_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline mt-2"
-                        >
-                          <FileCheck className="w-3.5 h-3.5" />
-                          <span>Ver Comprovante Anexado</span>
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
-                      )}
+                        {stmt.receipt_url && (
+                          <a
+                            href={stmt.receipt_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline mt-2"
+                          >
+                            <FileCheck className="w-3.5 h-3.5" />
+                            <span>Ver Comprovante Anexado</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between md:justify-end gap-3 pt-3 md:pt-0 border-t md:border-0 border-border/60">
+                        <div className="text-right">
+                          <span className="text-xs text-zinc-400 block">Total a receber:</span>
+                          <span className="text-base font-extrabold text-white">
+                            {formatCurrency(Number(stmt.total_amount))}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => {
+                              setSelectedStatementId(stmt.id);
+                              setRejectModalOpen(true);
+                            }}
+                            className="px-3 py-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-xs font-semibold"
+                          >
+                            Recusar
+                          </button>
+                          <button
+                            onClick={() => handleApprovePayment(stmt.id, stmt.client_id)}
+                            className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-zinc-950 text-xs font-bold shadow-md shadow-emerald-500/20"
+                          >
+                            Dar Baixa
+                          </button>
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="flex items-center justify-between md:justify-end gap-3 pt-3 md:pt-0 border-t md:border-0 border-border/60">
-                      <div className="text-right">
-                        <span className="text-xs text-zinc-400 block">Total a receber:</span>
-                        <span className="text-base font-extrabold text-white">
-                          {formatCurrency(Number(stmt.total_amount))}
+                    {/* Detalhamento das corridas inclusas neste acerto parcial/total */}
+                    {stmtRides.length > 0 && (
+                      <div className="pt-2 border-t border-border/40">
+                        <span className="text-[11px] font-semibold text-zinc-300 block mb-1.5">
+                          Corridas inclusas neste pagamento:
                         </span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                          {stmtRides.map((ride) => (
+                            <div
+                              key={ride.id}
+                              className="text-xs bg-card/60 border border-border/50 rounded-lg px-2.5 py-1.5 flex items-center justify-between"
+                            >
+                              <div className="truncate pr-2">
+                                <span className="font-medium text-white">{formatDateBR(ride.ride_date)}</span>
+                                <span className="text-[10px] text-zinc-400 ml-1.5 truncate">
+                                  {ride.origin && ride.destination ? `${ride.origin} ➔ ${ride.destination}` : "Viagem"}
+                                </span>
+                              </div>
+                              <span className="font-semibold text-white shrink-0">
+                                {formatCurrency(Number(ride.amount))}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => {
-                            setSelectedStatementId(stmt.id);
-                            setRejectModalOpen(true);
-                          }}
-                          className="px-3 py-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-xs font-semibold"
-                        >
-                          Recusar
-                        </button>
-                        <button
-                          onClick={() => handleApprovePayment(stmt.id, stmt.client_id)}
-                          className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-zinc-950 text-xs font-bold shadow-md shadow-emerald-500/20"
-                        >
-                          Dar Baixa
-                        </button>
-                      </div>
-                    </div>
+                    )}
                   </div>
                 );
               })}

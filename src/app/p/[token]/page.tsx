@@ -62,6 +62,7 @@ export default function PassengerPortal() {
 
   // Modal de Pagamento Pix
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
+  const [selectedRideIds, setSelectedRideIds] = useState<string[]>([]);
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState("");
   const [copySuccess, setCopySuccess] = useState(false);
   const [uploadingReceipt, setUploadingReceipt] = useState(false);
@@ -184,16 +185,41 @@ export default function PassengerPortal() {
     return currentStatementRides.filter((r) => r.status === "pendente_confirmacao").length;
   }, [currentStatementRides]);
 
-  // Geração de QR Code Pix dinâmico
+  // Corridas disponíveis para pagamento (confirmadas no ciclo)
+  const payableRides = useMemo(() => {
+    return currentStatementRides.filter((r) => r.status === "confirmada" || r.status === "pendente_confirmacao");
+  }, [currentStatementRides]);
+
+  // Total das corridas selecionadas para pagamento
+  const selectedRidesTotal = useMemo(() => {
+    return payableRides
+      .filter((r) => selectedRideIds.includes(r.id))
+      .reduce((acc, r) => acc + Number(r.amount || 0), 0);
+  }, [payableRides, selectedRideIds]);
+
+  // Ao abrir o modal, pré-seleciona todas as corridas se nenhuma estiver selecionada
   useEffect(() => {
-    if (isPayModalOpen && settings?.pix_key) {
+    if (isPayModalOpen) {
+      if (payableRides.length > 0) {
+        setSelectedRideIds(payableRides.map((r) => r.id));
+      } else {
+        setSelectedRideIds([]);
+      }
+    }
+  }, [isPayModalOpen]);
+
+  // Geração de QR Code Pix dinâmico com base no valor selecionado
+  useEffect(() => {
+    if (isPayModalOpen && settings?.pix_key && selectedRidesTotal > 0) {
       // Simulação de payload Pix padrão para copia e cola
-      const pixPayload = `00020126360014BR.GOV.BCB.PIX0114${settings.pix_key}520400005303986540${totalOwed.toFixed(2)}5802BR5915${settings.driver_name || "Motorista"}6009SAO PAULO62070503***6304`;
+      const pixPayload = `00020126360014BR.GOV.BCB.PIX0114${settings.pix_key}520400005303986540${selectedRidesTotal.toFixed(2)}5802BR5915${settings.driver_name || "Motorista"}6009SAO PAULO62070503***6304`;
       QRCode.toDataURL(pixPayload, { width: 260, margin: 2 })
         .then((url) => setQrCodeDataUrl(url))
         .catch((err) => console.error(err));
+    } else {
+      setQrCodeDataUrl("");
     }
-  }, [isPayModalOpen, settings, totalOwed]);
+  }, [isPayModalOpen, settings, selectedRidesTotal]);
 
   // Ações
   async function handleCreateRide(e: React.FormEvent) {
@@ -258,7 +284,12 @@ export default function PassengerPortal() {
 
   async function handleUploadReceipt(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (!file || !statement) return;
+    if (!file || !statement || !client) return;
+
+    if (selectedRideIds.length === 0) {
+      alert("Por favor, selecione pelo menos uma corrida para realizar o pagamento.");
+      return;
+    }
 
     setUploadingReceipt(true);
     try {
@@ -277,23 +308,70 @@ export default function PassengerPortal() {
 
       const receiptUrl = publicUrlData.publicUrl;
 
-      // Atualiza fatura para pendente_conferencia
+      // 1. Atualiza as corridas selecionadas para estarem vinculadas a esta fatura
+      await supabase
+        .from("rides")
+        .update({ statement_id: statement.id })
+        .in("id", selectedRideIds);
+
+      // 2. Atualiza a fatura atual com o valor e quantidade EXATA das corridas selecionadas
       await supabase
         .from("monthly_statements")
         .update({
           receipt_url: receiptUrl,
+          total_amount: selectedRidesTotal,
+          rides_count: selectedRideIds.length,
           status: "pendente_conferencia",
         })
         .eq("id", statement.id);
 
+      // 3. Verifica se sobraram corridas não selecionadas (ou futuras)
+      const remainingRides = currentStatementRides.filter(
+        (r) => !selectedRideIds.includes(r.id)
+      );
+
+      // Se sobraram corridas não selecionadas, cria ou garante uma nova fatura 'em_aberto' para elas
+      if (remainingRides.length > 0) {
+        const dueDay = client.billing_due_day || 10;
+        const now = new Date();
+        const initialDueDate = `${format(now, "yyyy-MM")}-${String(dueDay).padStart(2, "0")}`;
+
+        const { data: newOpenStmt } = await supabase
+          .from("monthly_statements")
+          .insert({
+            client_id: client.id,
+            reference_month: statement.reference_month || format(now, "yyyy-MM"),
+            due_date: client.preferred_due_date || initialDueDate,
+            total_amount: remainingRides.reduce((acc, r) => acc + Number(r.amount || 0), 0),
+            rides_count: remainingRides.length,
+            status: "em_aberto",
+          })
+          .select()
+          .single();
+
+        if (newOpenStmt) {
+          // Desassocia ou associa as corridas restantes à nova fatura em aberto
+          await supabase
+            .from("rides")
+            .update({ statement_id: newOpenStmt.id })
+            .in("id", remainingRides.map((r) => r.id));
+        }
+      }
+
       setStatement({
         ...statement,
         receipt_url: receiptUrl,
+        total_amount: selectedRidesTotal,
+        rides_count: selectedRideIds.length,
         status: "pendente_conferencia",
       });
 
       setReceiptSuccess(true);
-      setTimeout(() => setReceiptSuccess(false), 4000);
+      setTimeout(() => {
+        setReceiptSuccess(false);
+        setIsPayModalOpen(false);
+        loadPortalData();
+      }, 3000);
     } catch (err) {
       console.error("Erro ao enviar comprovante:", err);
       alert("Erro ao enviar comprovante. Tente novamente.");
@@ -777,14 +855,102 @@ export default function PassengerPortal() {
               </button>
             </div>
 
+            {/* Seleção de Corridas para Pagamento Parcial */}
+            <div className="bg-surface border border-border rounded-xl p-3 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-primary" />
+                    Selecione as corridas a pagar
+                  </h4>
+                  <p className="text-[11px] text-zinc-400">
+                    {selectedRideIds.length} de {payableRides.length} selecionada(s)
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (selectedRideIds.length === payableRides.length) {
+                        setSelectedRideIds([]);
+                      } else {
+                        setSelectedRideIds(payableRides.map((r) => r.id));
+                      }
+                    }}
+                    className="text-[11px] text-primary hover:underline font-semibold"
+                  >
+                    {selectedRideIds.length === payableRides.length ? "Desmarcar todas" : "Marcar todas"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Lista com scroll das corridas */}
+              <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1 divide-y divide-border/40">
+                {payableRides.map((ride) => {
+                  const isSelected = selectedRideIds.includes(ride.id);
+                  return (
+                    <label
+                      key={ride.id}
+                      className={cn(
+                        "flex items-center justify-between p-2 rounded-lg cursor-pointer transition-all border text-xs",
+                        isSelected
+                          ? "bg-primary/10 border-primary/40 text-white"
+                          : "bg-card/50 border-border/60 text-zinc-400 hover:bg-zinc-800/50"
+                      )}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedRideIds((prev) => [...prev, ride.id]);
+                            } else {
+                              setSelectedRideIds((prev) => prev.filter((id) => id !== ride.id));
+                            }
+                          }}
+                          className="w-4 h-4 rounded border-border text-primary focus:ring-primary accent-amber-500 cursor-pointer"
+                        />
+                        <div className="truncate">
+                          <p className="font-semibold text-white truncate">
+                            {formatDateBR(ride.ride_date)} - {ride.origin && ride.destination ? `${ride.origin} ➔ ${ride.destination}` : "Corrida"}
+                          </p>
+                          <p className="text-[10px] text-zinc-400">
+                            {ride.notes ? `Obs: ${ride.notes}` : "Viagem individual"}
+                          </p>
+                        </div>
+                      </div>
+
+                      <span className="font-bold text-white shrink-0 ml-2">
+                        {formatCurrency(Number(ride.amount))}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+
+              {/* Resumo do Valor a Pagar */}
+              <div className="pt-2 border-t border-border flex items-center justify-between text-xs">
+                <span className="text-zinc-400">Subtotal selecionado:</span>
+                <span className="text-base font-extrabold text-primary">
+                  {formatCurrency(selectedRidesTotal)}
+                </span>
+              </div>
+            </div>
+
             {/* QR Code */}
-            {qrCodeDataUrl ? (
+            {selectedRideIds.length > 0 && qrCodeDataUrl ? (
               <div className="flex flex-col items-center p-4 bg-white rounded-xl shadow-inner mx-auto w-fit">
-                <img src={qrCodeDataUrl} alt="QR Code Pix" className="w-48 h-48" />
+                <img src={qrCodeDataUrl} alt="QR Code Pix" className="w-44 h-44" />
                 <span className="text-[10px] text-zinc-700 font-semibold mt-1">Escaneie com seu app de banco</span>
               </div>
+            ) : selectedRideIds.length === 0 ? (
+              <div className="text-center py-4 bg-surface/50 border border-border rounded-xl text-zinc-400 text-xs">
+                Selecione ao menos 1 corrida acima para gerar o pagamento.
+              </div>
             ) : (
-              <div className="text-center py-6 text-zinc-400 text-xs">Gerando QR Code...</div>
+              <div className="text-center py-4 text-zinc-400 text-xs">Gerando QR Code...</div>
             )}
 
             {/* Chave Pix e Copia e Cola */}
