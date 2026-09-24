@@ -23,7 +23,9 @@ import {
   Trash2,
   AlertTriangle,
   FileCheck,
-  Eye
+  Eye,
+  Wallet,
+  Hourglass
 } from "lucide-react";
 import { supabase, Client, Ride, MonthlyStatement, Expense, Settings } from "@/lib/supabase";
 import { formatCurrency, formatDateBR, cn } from "@/lib/utils";
@@ -187,17 +189,35 @@ export default function AdminDashboard() {
     return rides.filter((r) => r.status === "pendente_confirmacao");
   }, [rides]);
 
-  const grossRevenue = useMemo(() => {
+  // 1. Total que de fato JÁ ENTROU no caixa (corridas baixadas/faturadas)
+  const totalReceived = useMemo(() => {
     return rides
-      .filter((r) => r.status === "confirmada" || r.status === "faturada")
+      .filter((r) => r.status === "faturada")
       .reduce((acc, r) => acc + Number(r.amount || 0), 0);
   }, [rides]);
 
+  // 2. Total a receber (corridas confirmadas que ainda estão em aberto para pagamento)
+  const totalPendingPayment = useMemo(() => {
+    return rides
+      .filter((r) => r.status === "confirmada")
+      .reduce((acc, r) => acc + Number(r.amount || 0), 0);
+  }, [rides]);
+
+  // 3. Faturamento Bruto Geral (já recebido + a receber)
+  const grossRevenue = useMemo(() => {
+    return totalReceived + totalPendingPayment;
+  }, [totalReceived, totalPendingPayment]);
+
+  // 4. Despesas Operacionais totais
   const totalExpenses = useMemo(() => {
     return expenses.reduce((acc, exp) => acc + Number(exp.amount || 0), 0);
   }, [expenses]);
 
-  const netProfit = grossRevenue - totalExpenses;
+  // 5. Lucro Líquido Real em Caixa (O que realmente entrou - Despesas pagas)
+  const realCashProfit = totalReceived - totalExpenses;
+
+  // 6. Lucro Líquido Projetado (Faturamento total previsto - Despesas)
+  const projectedProfit = grossRevenue - totalExpenses;
 
   // Faturas pendentes de conferência pelo motorista
   const pendingStatements = useMemo(() => {
@@ -580,36 +600,88 @@ export default function AdminDashboard() {
           </button>
         </div>
 
-        {/* DASHBOARD FINANCEIRO EXECUTIVO */}
-        <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div className="bg-card border border-border p-4 rounded-xl relative overflow-hidden">
-            <span className="text-xs uppercase font-medium tracking-wider text-zinc-400 flex items-center gap-1.5">
-              <DollarSign className="w-3.5 h-3.5 text-primary" /> Faturamento Previsto
-            </span>
-            <div className="text-2xl font-bold text-white mt-2">
-              {formatCurrency(grossRevenue)}
-            </div>
-            <p className="text-[11px] text-zinc-400 mt-1">Soma de corridas confirmadas</p>
+        {/* DASHBOARD FINANCEIRO EXECUTIVO DETALHADO */}
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xs uppercase font-bold tracking-wider text-zinc-400 flex items-center gap-1.5">
+              <TrendingUp className="w-3.5 h-3.5 text-primary" /> Balanço Financeiro em Tempo Real
+            </h2>
+            <span className="text-[11px] text-zinc-500">Separado por recebimentos efetivos e valores a receber</span>
           </div>
 
-          <div className="bg-card border border-border p-4 rounded-xl relative overflow-hidden">
-            <span className="text-xs uppercase font-medium tracking-wider text-zinc-400 flex items-center gap-1.5">
-              <Fuel className="w-3.5 h-3.5 text-rose-400" /> Despesas Operacionais
-            </span>
-            <div className="text-2xl font-bold text-rose-400 mt-2">
-              {formatCurrency(totalExpenses)}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {/* Card 1: Já Recebido / Entrou de Fato no Caixa */}
+            <div className="bg-card border border-blue-500/30 p-4 rounded-xl relative overflow-hidden shadow-sm shadow-blue-500/5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-blue-400 flex items-center gap-1.5">
+                  <Wallet className="w-3.5 h-3.5 text-blue-400" /> Já Recebido (Entrou)
+                </span>
+                <span className="text-[10px] bg-blue-500/10 text-blue-300 px-2 py-0.5 rounded font-bold">
+                  Baixado
+                </span>
+              </div>
+              <div className="text-2xl font-black text-white mt-2">
+                {formatCurrency(totalReceived)}
+              </div>
+              <p className="text-[11px] text-zinc-400 mt-1">
+                Pagamentos confirmados e quitados
+              </p>
             </div>
-            <p className="text-[11px] text-zinc-400 mt-1">Combustível, seguro e manutenções</p>
-          </div>
 
-          <div className="bg-card border border-border p-4 rounded-xl relative overflow-hidden">
-            <span className="text-xs uppercase font-medium tracking-wider text-zinc-400 flex items-center gap-1.5">
-              <TrendingUp className="w-3.5 h-3.5 text-emerald-400" /> Lucro Líquido Real
-            </span>
-            <div className="text-2xl font-bold text-emerald-400 mt-2">
-              {formatCurrency(netProfit)}
+            {/* Card 2: Em Aberto a Receber */}
+            <div className="bg-card border border-amber-500/30 p-4 rounded-xl relative overflow-hidden shadow-sm shadow-amber-500/5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+                  <Hourglass className="w-3.5 h-3.5 text-amber-400" /> Em Aberto (A Receber)
+                </span>
+                <span className="text-[10px] bg-amber-500/10 text-amber-300 px-2 py-0.5 rounded font-bold">
+                  Pendente
+                </span>
+              </div>
+              <div className="text-2xl font-black text-amber-300 mt-2">
+                {formatCurrency(totalPendingPayment)}
+              </div>
+              <p className="text-[11px] text-zinc-400 mt-1">
+                Corridas realizadas aguardando acerto
+              </p>
             </div>
-            <p className="text-[11px] text-zinc-400 mt-1">Faturamento líquido em caixa</p>
+
+            {/* Card 3: Despesas Operacionais */}
+            <div className="bg-card border border-rose-500/30 p-4 rounded-xl relative overflow-hidden shadow-sm shadow-rose-500/5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-rose-400 flex items-center gap-1.5">
+                  <Fuel className="w-3.5 h-3.5 text-rose-400" /> Despesas Pagas
+                </span>
+                <span className="text-[10px] bg-rose-500/10 text-rose-300 px-2 py-0.5 rounded font-bold">
+                  Saídas
+                </span>
+              </div>
+              <div className="text-2xl font-black text-rose-400 mt-2">
+                {formatCurrency(totalExpenses)}
+              </div>
+              <p className="text-[11px] text-zinc-400 mt-1">
+                Combustível, seguro e manutenções
+              </p>
+            </div>
+
+            {/* Card 4: Lucro Líquido Real em Caixa */}
+            <div className="bg-gradient-to-br from-card via-card to-surface border border-emerald-500/40 p-4 rounded-xl relative overflow-hidden shadow-md shadow-emerald-500/10">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+                  <DollarSign className="w-3.5 h-3.5 text-emerald-400" /> Lucro Líquido Real
+                </span>
+                <span className="text-[10px] bg-emerald-500/15 text-emerald-300 px-2 py-0.5 rounded font-black">
+                  Em Caixa
+                </span>
+              </div>
+              <div className="text-2xl font-black text-emerald-400 mt-2">
+                {formatCurrency(realCashProfit)}
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-zinc-400 mt-1 pt-1 border-t border-border/50">
+                <span>Total Bruto Previsto:</span>
+                <span className="font-semibold text-zinc-200">{formatCurrency(grossRevenue)}</span>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -857,9 +929,24 @@ export default function AdminDashboard() {
                       </span>
                     </div>
                     <p className="text-xs text-zinc-400">{c.phone || "Sem telefone"}</p>
-                    <p className="text-xs font-bold text-emerald-400 mt-2">
-                      Total acumulado: {formatCurrency(clientTotal)}
-                    </p>
+                    <div className="mt-2.5 pt-2 border-t border-border/40 space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-zinc-400 flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-blue-500"></span> Já Pago:
+                        </span>
+                        <span className="font-bold text-blue-400">
+                          {formatCurrency(clientRides.filter((r) => r.status === "faturada").reduce((acc, r) => acc + Number(r.amount), 0))}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-zinc-400 flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-amber-500"></span> Em Aberto:
+                        </span>
+                        <span className="font-bold text-amber-300">
+                          {formatCurrency(clientRides.filter((r) => r.status === "confirmada").reduce((acc, r) => acc + Number(r.amount), 0))}
+                        </span>
+                      </div>
+                    </div>
                   </div>
 
                   <div className="pt-2 border-t border-border/60 flex items-center gap-1.5">
