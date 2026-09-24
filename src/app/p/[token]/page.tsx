@@ -113,16 +113,19 @@ export default function PassengerPortal() {
 
       if (settingsData) setSettings(settingsData);
 
-      // 3. Busca ou cria fatura em aberto
+      // 3. Busca faturas do cliente: prioriza 'em_aberto', senão 'pendente_conferencia', senão 'recusado'
       const refMonth = format(new Date(), "yyyy-MM");
-      let { data: stmtData } = await supabase
+      const { data: stmtsData } = await supabase
         .from("monthly_statements")
         .select("*")
         .eq("client_id", clientData.id)
         .in("status", ["em_aberto", "pendente_conferencia", "recusado"])
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .order("created_at", { ascending: false });
+
+      let stmtData = stmtsData?.find((s) => s.status === "em_aberto") ||
+                     stmtsData?.find((s) => s.status === "pendente_conferencia") ||
+                     stmtsData?.find((s) => s.status === "recusado") ||
+                     null;
 
       if (!stmtData) {
         // Gera vencimento inicial baseado no preferred_due_date ou billing_due_day
@@ -173,21 +176,30 @@ export default function PassengerPortal() {
     );
   }, [rides, statement]);
 
+  // Total a acertar (apenas o que ainda NÃO foi pago/faturado)
   const totalOwed = useMemo(() => {
-    return currentStatementRides.reduce((acc, r) => acc + Number(r.amount || 0), 0);
+    return currentStatementRides
+      .filter((r) => r.status !== "faturada")
+      .reduce((acc, r) => acc + Number(r.amount || 0), 0);
   }, [currentStatementRides]);
 
+  const paidCount = useMemo(() => {
+    return rides.filter((r) => r.status === "faturada").length;
+  }, [rides]);
+
   const confirmedCount = useMemo(() => {
-    return currentStatementRides.filter((r) => r.status === "confirmada" || r.status === "faturada").length;
+    return currentStatementRides.filter((r) => r.status === "confirmada").length;
   }, [currentStatementRides]);
 
   const pendingCount = useMemo(() => {
     return currentStatementRides.filter((r) => r.status === "pendente_confirmacao").length;
   }, [currentStatementRides]);
 
-  // Corridas disponíveis para pagamento (confirmadas no ciclo)
+  // Corridas disponíveis para pagamento: apenas confirmadas ou pendentes (NUNCA faturadas/já pagas)
   const payableRides = useMemo(() => {
-    return currentStatementRides.filter((r) => r.status === "confirmada" || r.status === "pendente_confirmacao");
+    return currentStatementRides.filter(
+      (r) => r.status === "confirmada" || r.status === "pendente_confirmacao"
+    );
   }, [currentStatementRides]);
 
   // Total das corridas selecionadas para pagamento
@@ -490,11 +502,19 @@ export default function PassengerPortal() {
               {formatCurrency(totalOwed)}
             </div>
 
-            <div className="flex items-center justify-between text-xs text-zinc-400 pt-2 border-t border-border/60">
-              <span className="flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                {confirmedCount} confirmadas
-              </span>
+            <div className="flex flex-wrap items-center justify-between text-xs text-zinc-400 pt-2 border-t border-border/60 gap-2">
+              <div className="flex items-center gap-3">
+                <span className="flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  {confirmedCount} a pagar
+                </span>
+                {paidCount > 0 && (
+                  <span className="flex items-center gap-1 text-blue-400">
+                    <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                    {paidCount} já paga(s)
+                  </span>
+                )}
+              </div>
               {pendingCount > 0 && (
                 <span className="flex items-center gap-1 text-amber-400">
                   <Clock className="w-3.5 h-3.5" />
@@ -615,10 +635,26 @@ export default function PassengerPortal() {
             {daysInMonth.map((day) => {
               const dateKey = format(day, "yyyy-MM-dd");
               const dayRides = rides.filter((r) => r.ride_date === dateKey && r.status !== "cancelada");
-              const isConfirmed = dayRides.some((r) => r.status === "confirmada" || r.status === "faturada");
+              const isPaid = dayRides.some((r) => r.status === "faturada");
+              const isConfirmed = dayRides.some((r) => r.status === "confirmada");
               const isPending = dayRides.some((r) => r.status === "pendente_confirmacao");
               const hasRide = dayRides.length > 0;
               const totalDayAmount = dayRides.reduce((acc, r) => acc + Number(r.amount), 0);
+
+              // Prioridade de cor:
+              // 1. Se tem viagem faturada/paga (e não tem confirmada aberta) -> Azul (#3b82f6 / sky/blue)
+              // 2. Se tem viagem confirmada -> Verde (emerald)
+              // 3. Se tem viagem pendente de confirmação -> Âmbar (amber)
+              let statusBorderBg = "bg-surface/60 hover:bg-surface border-border/50 text-zinc-300 hover:border-zinc-700";
+              if (hasRide) {
+                if (isPaid && !isConfirmed && !isPending) {
+                  statusBorderBg = "bg-blue-500/15 border-blue-500/40 text-blue-300 shadow-sm shadow-blue-500/10";
+                } else if (isConfirmed) {
+                  statusBorderBg = "bg-emerald-500/15 border-emerald-500/40 text-emerald-300 shadow-sm shadow-emerald-500/10";
+                } else if (isPending) {
+                  statusBorderBg = "bg-amber-500/15 border-amber-500/40 text-amber-300";
+                }
+              }
 
               return (
                 <button
@@ -630,11 +666,7 @@ export default function PassengerPortal() {
                   className={cn(
                     "h-14 rounded-xl p-1.5 flex flex-col justify-between items-center transition-all border text-left relative",
                     isToday(day) && "ring-1 ring-accent",
-                    hasRide
-                      ? isConfirmed
-                        ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
-                        : "bg-amber-500/15 border-amber-500/40 text-amber-300"
-                      : "bg-surface/60 hover:bg-surface border-border/50 text-zinc-300 hover:border-zinc-700"
+                    statusBorderBg
                   )}
                 >
                   <span className="text-[11px] font-medium leading-none">
@@ -655,9 +687,12 @@ export default function PassengerPortal() {
           </div>
 
           {/* Legenda do Calendário */}
-          <div className="flex items-center justify-center gap-4 mt-4 pt-3 border-t border-border/50 text-[11px] text-zinc-400">
+          <div className="flex flex-wrap items-center justify-center gap-3 sm:gap-4 mt-4 pt-3 border-t border-border/50 text-[11px] text-zinc-400">
             <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span> Confirmada
+              <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shadow-sm shadow-blue-500/50"></span> Viagem Paga
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/50"></span> A Pagar (Confirmada)
             </span>
             <span className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span> Pendente de checagem
@@ -690,7 +725,9 @@ export default function PassengerPortal() {
                     <div
                       className={cn(
                         "w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold",
-                        ride.status === "confirmada" || ride.status === "faturada"
+                        ride.status === "faturada"
+                          ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                          : ride.status === "confirmada"
                           ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
                           : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
                       )}
@@ -705,12 +742,18 @@ export default function PassengerPortal() {
                         <span
                           className={cn(
                             "text-[10px] px-1.5 py-0.5 rounded font-medium",
-                            ride.status === "confirmada" || ride.status === "faturada"
+                            ride.status === "faturada"
+                              ? "bg-blue-500/15 text-blue-400 border border-blue-500/30"
+                              : ride.status === "confirmada"
                               ? "bg-emerald-500/15 text-emerald-400"
                               : "bg-amber-500/15 text-amber-400"
                           )}
                         >
-                          {ride.status === "confirmada" || ride.status === "faturada" ? "Confirmada" : "Pendente"}
+                          {ride.status === "faturada"
+                            ? "Paga"
+                            : ride.status === "confirmada"
+                            ? "Confirmada"
+                            : "Pendente"}
                         </span>
                       </div>
                       <p className="text-[11px] text-zinc-400 mt-0.5">
@@ -757,8 +800,8 @@ export default function PassengerPortal() {
           <div className="bg-card border border-border w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-4">
             <div className="flex items-center justify-between border-b border-border pb-3">
               <div>
-                <h3 className="text-base font-bold text-white">Marcar Corrida</h3>
-                <p className="text-xs text-zinc-400">Data selecionada: {formatDateBR(selectedDate)}</p>
+                <h3 className="text-base font-bold text-white">Dia {formatDateBR(selectedDate)}</h3>
+                <p className="text-xs text-zinc-400">Detalhes do dia e novas corridas</p>
               </div>
               <button
                 onClick={() => setIsModalOpen(false)}
@@ -768,7 +811,52 @@ export default function PassengerPortal() {
               </button>
             </div>
 
+            {/* Corridas já existentes nesta data */}
+            {rides.filter((r) => r.ride_date === selectedDate && r.status !== "cancelada").length > 0 && (
+              <div className="space-y-2 pb-2 border-b border-border/60">
+                <span className="text-xs font-semibold text-zinc-300 block">Viagens deste dia:</span>
+                <div className="space-y-1.5">
+                  {rides
+                    .filter((r) => r.ride_date === selectedDate && r.status !== "cancelada")
+                    .map((r) => (
+                      <div
+                        key={r.id}
+                        className={cn(
+                          "p-2.5 rounded-xl border text-xs flex items-center justify-between gap-2",
+                          r.status === "faturada"
+                            ? "bg-blue-500/10 border-blue-500/30 text-white"
+                            : r.status === "confirmada"
+                            ? "bg-emerald-500/10 border-emerald-500/30 text-white"
+                            : "bg-amber-500/10 border-amber-500/30 text-white"
+                        )}
+                      >
+                        <div className="truncate">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={cn(
+                                "text-[10px] px-1.5 py-0.2 rounded font-bold uppercase",
+                                r.status === "faturada"
+                                  ? "bg-blue-500/20 text-blue-300"
+                                  : r.status === "confirmada"
+                                  ? "bg-emerald-500/20 text-emerald-300"
+                                  : "bg-amber-500/20 text-amber-300"
+                              )}
+                            >
+                              {r.status === "faturada" ? "✓ Paga" : r.status === "confirmada" ? "A Pagar" : "Pendente"}
+                            </span>
+                            <span className="font-semibold">{r.origin && r.destination ? `${r.origin} ➔ ${r.destination}` : "Corrida"}</span>
+                          </div>
+                          {r.notes && <p className="text-[10px] text-zinc-400 mt-0.5">{r.notes}</p>}
+                        </div>
+                        <span className="font-bold text-sm shrink-0">{formatCurrency(Number(r.amount))}</span>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
+
             <form onSubmit={handleCreateRide} className="space-y-3.5">
+              <span className="text-xs font-semibold text-zinc-300 block">Registrar nova corrida para este dia:</span>
               <div>
                 <label className="block text-xs font-medium text-zinc-300 mb-1">
                   Valor da Corrida (R$) *
