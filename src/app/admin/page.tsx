@@ -25,7 +25,8 @@ import {
   FileCheck,
   Eye,
   Wallet,
-  Hourglass
+  Hourglass,
+  Edit2
 } from "lucide-react";
 import { supabase, Client, Ride, MonthlyStatement, Expense, Settings } from "@/lib/supabase";
 import { formatCurrency, formatDateBR, cn } from "@/lib/utils";
@@ -53,6 +54,14 @@ export default function AdminDashboard() {
   const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
   const [deletingClient, setDeletingClient] = useState(false);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
+
+  // Modal e Formulário Editar Passageiro
+  const [clientToEdit, setClientToEdit] = useState<Client | null>(null);
+  const [isEditClientModalOpen, setIsEditClientModalOpen] = useState(false);
+  const [editClientName, setEditClientName] = useState("");
+  const [editClientPhone, setEditClientPhone] = useState("");
+  const [editClientDueDay, setEditClientDueDay] = useState("10");
+  const [savingEditClient, setSavingEditClient] = useState(false);
 
   // Modal de Recusa / Comprovante
   const [rejectStmtModalOpen, setRejectStmtModalOpen] = useState(false);
@@ -364,6 +373,44 @@ export default function AdminDashboard() {
     } catch (err) {
       console.error(err);
       alert("Erro ao cadastrar passageiro.");
+    }
+  }
+
+  // Ações de Editar Passageiro
+  function handleOpenEditClient(client: Client) {
+    setClientToEdit(client);
+    setEditClientName(client.name || "");
+    setEditClientPhone(client.phone || "");
+    setEditClientDueDay(String(client.billing_due_day || 10));
+    setIsEditClientModalOpen(true);
+  }
+
+  async function handleUpdateClient(e: React.FormEvent) {
+    e.preventDefault();
+    if (!clientToEdit || !editClientName) return;
+    setSavingEditClient(true);
+    try {
+      const { data: updated, error } = await supabase
+        .from("clients")
+        .update({
+          name: editClientName,
+          phone: editClientPhone || null,
+          billing_due_day: parseInt(editClientDueDay) || 10,
+        })
+        .eq("id", clientToEdit.id)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setClients((prev) => prev.map((c) => (c.id === clientToEdit.id ? { ...c, ...updated } : c)));
+      setIsEditClientModalOpen(false);
+      setClientToEdit(null);
+    } catch (err) {
+      console.error(err);
+      alert("Erro ao atualizar dados do passageiro.");
+    } finally {
+      setSavingEditClient(false);
     }
   }
 
@@ -967,6 +1014,13 @@ export default function AdminDashboard() {
                       <ExternalLink className="w-3.5 h-3.5" />
                     </a>
                     <button
+                      onClick={() => handleOpenEditClient(c)}
+                      className="p-1.5 rounded-lg bg-card hover:bg-zinc-800 border border-border text-zinc-400 hover:text-white transition-all"
+                      title="Editar Passageiro"
+                    >
+                      <Edit2 className="w-3.5 h-3.5 text-zinc-300" />
+                    </button>
+                    <button
                       onClick={() => setClientToDelete(c)}
                       className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-400 transition-all"
                       title="Excluir Passageiro"
@@ -1236,6 +1290,93 @@ export default function AdminDashboard() {
                   className="flex-1 py-2.5 rounded-xl bg-primary hover:bg-primary-hover text-zinc-950 text-xs font-bold"
                 >
                   Salvar Passageiro
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: EDITAR PASSAGEIRO */}
+      {isEditClientModalOpen && clientToEdit && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-card border border-border w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Edit2 className="w-4 h-4 text-primary" /> Editar Passageiro
+                </h3>
+                <p className="text-xs text-zinc-400">Atualize o telefone para acesso do passageiro sem senha</p>
+              </div>
+              <button
+                onClick={() => {
+                  setIsEditClientModalOpen(false);
+                  setClientToEdit(null);
+                }}
+                className="text-zinc-400 hover:text-white text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdateClient} className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1">Nome Completo *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ex: João da Silva"
+                  value={editClientName}
+                  onChange={(e) => setEditClientName(e.target.value)}
+                  className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-sm focus:border-primary focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1">
+                  WhatsApp / Telefone (para login do passageiro)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: (11) 98765-4321"
+                  value={editClientPhone}
+                  onChange={(e) => setEditClientPhone(e.target.value)}
+                  className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-sm focus:border-primary focus:outline-none"
+                />
+                <span className="text-[11px] text-zinc-500 mt-1 block">
+                  O passageiro utilizará este telefone para acessar o próprio painel pelo aplicativo instalado.
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1">Dia Padrão de Vencimento</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="31"
+                  value={editClientDueDay}
+                  onChange={(e) => setEditClientDueDay(e.target.value)}
+                  className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-sm focus:border-primary focus:outline-none"
+                />
+              </div>
+
+              <div className="pt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsEditClientModalOpen(false);
+                    setClientToEdit(null);
+                  }}
+                  className="flex-1 py-2.5 rounded-xl bg-surface border border-border text-zinc-300 text-xs font-medium"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingEditClient}
+                  className="flex-1 py-2.5 rounded-xl bg-primary hover:bg-primary-hover text-zinc-950 text-xs font-bold"
+                >
+                  {savingEditClient ? "Salvando..." : "Salvar Alterações"}
                 </button>
               </div>
             </form>
