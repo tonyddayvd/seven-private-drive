@@ -20,7 +20,9 @@ import {
   AlertCircle,
   FileCheck,
   Shield,
-  MessageCircle
+  MessageCircle,
+  History,
+  Receipt
 } from "lucide-react";
 import { supabase, Client, Ride, MonthlyStatement, Settings } from "@/lib/supabase";
 import { formatCurrency, formatDateBR, cn } from "@/lib/utils";
@@ -73,6 +75,9 @@ export default function PassengerPortal() {
   // Edição de Data Flexível de Pagamento
   const [editingDueDate, setEditingDueDate] = useState(false);
   const [customDueDate, setCustomDueDate] = useState("");
+
+  // Aba do Histórico: "abertas" (Ciclo Atual / A Pagar) vs "pagas" (Já Pagas)
+  const [historyTab, setHistoryTab] = useState<"abertas" | "pagas">("abertas");
 
   // 1. Carrega dados do passageiro e grava token no localStorage para PWA
   useEffect(() => {
@@ -188,6 +193,25 @@ export default function PassengerPortal() {
   const paidCount = useMemo(() => {
     return rides.filter((r) => r.status === "faturada").length;
   }, [rides]);
+
+  // Lista de todas as corridas que já foram pagas/faturadas
+  const paidRides = useMemo(() => {
+    return rides
+      .filter((r) => r.status === "faturada")
+      .sort((a, b) => new Date(b.ride_date).getTime() - new Date(a.ride_date).getTime());
+  }, [rides]);
+
+  // Total acumulado já pago pelo passageiro
+  const totalPaid = useMemo(() => {
+    return paidRides.reduce((acc, r) => acc + Number(r.amount || 0), 0);
+  }, [paidRides]);
+
+  // Lista de corridas em aberto (ciclo atual / não faturadas)
+  const openRides = useMemo(() => {
+    return currentStatementRides
+      .filter((r) => r.status !== "faturada")
+      .sort((a, b) => new Date(b.ride_date).getTime() - new Date(a.ride_date).getTime());
+  }, [currentStatementRides]);
 
   const confirmedCount = useMemo(() => {
     return currentStatementRides.filter((r) => r.status === "confirmada").length;
@@ -806,92 +830,207 @@ export default function PassengerPortal() {
           </div>
         </section>
 
-        {/* LISTA RECENTE DE CORRIDAS DO CICLO */}
-        <section className="bg-card border border-border rounded-2xl p-4">
-          <h2 className="text-sm font-bold text-white mb-3 flex items-center justify-between">
-            <span>Histórico de Corridas do Ciclo</span>
-            <span className="text-xs text-zinc-400 font-normal">{currentStatementRides.length} registros</span>
-          </h2>
-
-          {currentStatementRides.length === 0 ? (
-            <div className="text-center py-6 text-zinc-400 text-xs">
-              Nenhuma corrida registrada neste ciclo ainda. Clique no calendário para adicionar a primeira!
+        {/* HISTÓRICO TRANSPARENTE DE CORRIDAS (ABERTAS E PAGAS) */}
+        <section className="bg-card border border-border rounded-2xl p-4 shadow-sm">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+            <div>
+              <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                <History className="w-4 h-4 text-primary" /> Histórico de Corridas
+              </h2>
+              <p className="text-xs text-zinc-400">
+                Acompanhe com transparência suas viagens em aberto e tudo o que já foi quitado
+              </p>
             </div>
-          ) : (
-            <div className="space-y-2">
-              {currentStatementRides.map((ride) => (
-                <div
-                  key={ride.id}
-                  className="bg-surface border border-border/70 rounded-xl p-3 flex items-center justify-between gap-3"
+
+            {/* Abas Alternáveis */}
+            <div className="flex items-center bg-surface p-1 rounded-xl border border-border/80 self-start sm:self-auto">
+              <button
+                type="button"
+                onClick={() => setHistoryTab("abertas")}
+                className={cn(
+                  "px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5",
+                  historyTab === "abertas"
+                    ? "bg-primary text-zinc-950 shadow-sm shadow-primary/20"
+                    : "text-zinc-400 hover:text-white"
+                )}
+              >
+                <span>A Pagar / Ciclo</span>
+                <span
+                  className={cn(
+                    "text-[10px] px-1.5 py-0.2 rounded-full font-bold",
+                    historyTab === "abertas" ? "bg-zinc-950/20 text-zinc-950" : "bg-card text-zinc-400"
+                  )}
                 >
-                  <div className="flex items-center gap-3">
+                  {openRides.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setHistoryTab("pagas")}
+                className={cn(
+                  "px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5",
+                  historyTab === "pagas"
+                    ? "bg-blue-500 text-white shadow-sm shadow-blue-500/20"
+                    : "text-zinc-400 hover:text-white"
+                )}
+              >
+                <span>Já Pagas</span>
+                <span
+                  className={cn(
+                    "text-[10px] px-1.5 py-0.2 rounded-full font-bold",
+                    historyTab === "pagas" ? "bg-black/30 text-white" : "bg-card text-zinc-400"
+                  )}
+                >
+                  {paidRides.length}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          {/* Resumo da Aba Selecionada */}
+          <div className="mb-3 px-3 py-2 rounded-xl bg-surface/50 border border-border/60 flex items-center justify-between text-xs">
+            {historyTab === "abertas" ? (
+              <>
+                <span className="text-zinc-400">Subtotal de corridas a pagar neste ciclo:</span>
+                <span className="font-bold text-emerald-400 text-sm">{formatCurrency(totalOwed)}</span>
+              </>
+            ) : (
+              <>
+                <span className="text-zinc-400">Total acumulado já quitado no histórico:</span>
+                <span className="font-bold text-blue-400 text-sm">{formatCurrency(totalPaid)}</span>
+              </>
+            )}
+          </div>
+
+          {/* Conteúdo da Aba: Corridas Abertas */}
+          {historyTab === "abertas" && (
+            <div>
+              {openRides.length === 0 ? (
+                <div className="text-center py-6 text-zinc-400 text-xs bg-surface/30 rounded-xl border border-dashed border-border/60">
+                  ✓ Nenhuma corrida pendente ou em aberto no ciclo atual. Clique no calendário para adicionar!
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {openRides.map((ride) => (
                     <div
-                      className={cn(
-                        "w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold",
-                        ride.status === "faturada"
-                          ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
-                          : ride.status === "confirmada"
-                          ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                          : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
-                      )}
+                      key={ride.id}
+                      className="bg-surface border border-border/70 rounded-xl p-3 flex items-center justify-between gap-3"
                     >
-                      <Car className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold text-white">
-                          {formatDateBR(ride.ride_date)}
-                        </span>
-                        <span
+                      <div className="flex items-center gap-3">
+                        <div
                           className={cn(
-                            "text-[10px] px-1.5 py-0.5 rounded font-medium",
-                            ride.status === "faturada"
-                              ? "bg-blue-500/15 text-blue-400 border border-blue-500/30"
-                              : ride.status === "confirmada"
-                              ? "bg-emerald-500/15 text-emerald-400"
-                              : "bg-amber-500/15 text-amber-400"
+                            "w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold",
+                            ride.status === "confirmada"
+                              ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                              : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
                           )}
                         >
-                          {ride.status === "faturada"
-                            ? "Paga"
-                            : ride.status === "confirmada"
-                            ? "Confirmada"
-                            : "Pendente"}
-                        </span>
+                          <Car className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold text-white">
+                              {formatDateBR(ride.ride_date)}
+                            </span>
+                            <span
+                              className={cn(
+                                "text-[10px] px-1.5 py-0.5 rounded font-medium",
+                                ride.status === "confirmada"
+                                  ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
+                                  : "bg-amber-500/15 text-amber-400 border border-amber-500/20"
+                              )}
+                            >
+                              {ride.status === "confirmada" ? "A Pagar (Confirmada)" : "Pendente de Checagem"}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-zinc-400 mt-0.5">
+                            {ride.origin && ride.destination ? `${ride.origin} ➔ ${ride.destination}` : "Viagem registrada"}
+                          </p>
+                          {ride.notes && (
+                            <p className="text-[10px] text-zinc-500 italic mt-0.5">Obs: {ride.notes}</p>
+                          )}
+                        </div>
                       </div>
-                      <p className="text-[11px] text-zinc-400 mt-0.5">
-                        {ride.origin && ride.destination ? `${ride.origin} ➔ ${ride.destination}` : "Viagem registrada"}
-                      </p>
+
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-bold text-white">
+                          {formatCurrency(Number(ride.amount))}
+                        </span>
+
+                        {/* Se corrida foi lançada pelo motorista e ainda aguarda confirmação do passageiro */}
+                        {ride.status === "pendente_confirmacao" && ride.created_by === "driver" && (
+                          <button
+                            onClick={async () => {
+                              try {
+                                await supabase.from("rides").update({ status: "confirmada" }).eq("id", ride.id);
+                                setRides((prev) =>
+                                  prev.map((r) => (r.id === ride.id ? { ...r, status: "confirmada" } : r))
+                                );
+                              } catch (err) {
+                                console.error(err);
+                              }
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-zinc-950 text-xs font-bold transition-all"
+                            title="Confirmar que você realizou esta corrida"
+                          >
+                            Confirmar
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <span className="text-sm font-bold text-white">
-                      {formatCurrency(Number(ride.amount))}
-                    </span>
-
-                    {/* Se a corrida foi lançada pelo motorista e ainda está pendente de confirmação pelo passageiro */}
-                    {ride.status === "pendente_confirmacao" && ride.created_by === "driver" && (
-                      <button
-                        onClick={async () => {
-                          try {
-                            await supabase.from("rides").update({ status: "confirmada" }).eq("id", ride.id);
-                            setRides((prev) =>
-                              prev.map((r) => (r.id === ride.id ? { ...r, status: "confirmada" } : r))
-                            );
-                          } catch (err) {
-                            console.error(err);
-                          }
-                        }}
-                        className="px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-zinc-950 text-xs font-bold transition-all"
-                        title="Confirmar que você realizou esta corrida"
-                      >
-                        Confirmar
-                      </button>
-                    )}
-                  </div>
+                  ))}
                 </div>
-              ))}
+              )}
+            </div>
+          )}
+
+          {/* Conteúdo da Aba: Corridas Já Pagas */}
+          {historyTab === "pagas" && (
+            <div>
+              {paidRides.length === 0 ? (
+                <div className="text-center py-6 text-zinc-400 text-xs bg-surface/30 rounded-xl border border-dashed border-border/60">
+                  Nenhuma corrida quitada no histórico até o momento. Conforme seus pagamentos forem confirmados, elas aparecerão aqui!
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {paidRides.map((ride) => (
+                    <div
+                      key={ride.id}
+                      className="bg-surface/80 border border-blue-500/25 rounded-xl p-3 flex items-center justify-between gap-3"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 flex items-center justify-center text-xs font-bold">
+                          <CheckCircle2 className="w-4 h-4 text-blue-400" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold text-white">
+                              {formatDateBR(ride.ride_date)}
+                            </span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-blue-500/15 text-blue-300 border border-blue-500/30 flex items-center gap-1">
+                              ✓ Já Paga
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-zinc-400 mt-0.5">
+                            {ride.origin && ride.destination ? `${ride.origin} ➔ ${ride.destination}` : "Viagem quitada"}
+                          </p>
+                          {ride.notes && (
+                            <p className="text-[10px] text-zinc-500 italic mt-0.5">Obs: {ride.notes}</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-sm font-bold text-blue-300">
+                          {formatCurrency(Number(ride.amount))}
+                        </span>
+                        <span className="block text-[10px] text-zinc-500 font-medium">Baixa efetuada</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </section>
