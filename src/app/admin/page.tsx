@@ -806,8 +806,8 @@ export default function AdminDashboard() {
                             </a>
                           </div>
                         ) : (
-                          <span className="text-[11px] text-amber-400 block mt-2">
-                            ⚠️ Comprovante não anexado
+                          <span className="text-[11px] text-emerald-400 font-medium inline-flex items-center gap-1 mt-2 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
+                            💬 Enviado via WhatsApp / Aguardando conferência bancária
                           </span>
                         )}
                       </div>

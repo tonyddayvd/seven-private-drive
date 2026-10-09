@@ -189,7 +189,7 @@ export default function PaymentAuditPage() {
                           Vencimento da fatura: {formatDateBR(stmt.due_date)}
                         </p>
 
-                        {stmt.receipt_url && (
+                        {stmt.receipt_url ? (
                           <div className="flex items-center gap-3 mt-2">
                             <button
                               type="button"
@@ -209,6 +209,10 @@ export default function PaymentAuditPage() {
                               <span>Abrir original</span>
                             </a>
                           </div>
+                        ) : (
+                          <span className="text-[11px] text-emerald-400 font-medium inline-flex items-center gap-1 mt-2 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
+                            💬 Enviado via WhatsApp / Aguardando conferência bancária
+                          </span>
                         )}
                       </div>
 

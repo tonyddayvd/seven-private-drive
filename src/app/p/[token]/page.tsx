@@ -19,7 +19,8 @@ import {
   TrendingUp,
   AlertCircle,
   FileCheck,
-  Shield
+  Shield,
+  MessageCircle
 } from "lucide-react";
 import { supabase, Client, Ride, MonthlyStatement, Settings } from "@/lib/supabase";
 import { formatCurrency, formatDateBR, cn } from "@/lib/utils";
@@ -67,6 +68,7 @@ export default function PassengerPortal() {
   const [copySuccess, setCopySuccess] = useState(false);
   const [uploadingReceipt, setUploadingReceipt] = useState(false);
   const [receiptSuccess, setReceiptSuccess] = useState(false);
+  const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
 
   // Edição de Data Flexível de Pagamento
   const [editingDueDate, setEditingDueDate] = useState(false);
@@ -389,6 +391,107 @@ export default function PassengerPortal() {
       alert("Erro ao enviar comprovante. Tente novamente.");
     } finally {
       setUploadingReceipt(false);
+    }
+  }
+
+  // Finalização do pagamento via WhatsApp (quando o passageiro prefere enviar comprovante ou avisar no WhatsApp)
+  async function handleNotifyWhatsApp() {
+    if (!client || !statement) return;
+
+    if (selectedRideIds.length === 0) {
+      alert("Por favor, selecione pelo menos uma corrida para realizar o pagamento.");
+      return;
+    }
+
+    setSendingWhatsApp(true);
+    try {
+      // 1. Atualiza as corridas selecionadas para estarem vinculadas a esta fatura
+      await supabase
+        .from("rides")
+        .update({ statement_id: statement.id })
+        .in("id", selectedRideIds);
+
+      // 2. Atualiza a fatura atual com o valor e quantidade EXATA das corridas selecionadas para 'pendente_conferencia'
+      await supabase
+        .from("monthly_statements")
+        .update({
+          total_amount: selectedRidesTotal,
+          rides_count: selectedRideIds.length,
+          status: "pendente_conferencia",
+        })
+        .eq("id", statement.id);
+
+      // 3. Se sobraram corridas não selecionadas, cria ou garante uma nova fatura 'em_aberto' para elas
+      const remainingRides = currentStatementRides.filter(
+        (r) => !selectedRideIds.includes(r.id)
+      );
+
+      if (remainingRides.length > 0) {
+        const dueDay = client.billing_due_day || 10;
+        const now = new Date();
+        const initialDueDate = `${format(now, "yyyy-MM")}-${String(dueDay).padStart(2, "0")}`;
+
+        const { data: newOpenStmt } = await supabase
+          .from("monthly_statements")
+          .insert({
+            client_id: client.id,
+            reference_month: statement.reference_month || format(now, "yyyy-MM"),
+            due_date: client.preferred_due_date || initialDueDate,
+            total_amount: remainingRides.reduce((acc, r) => acc + Number(r.amount || 0), 0),
+            rides_count: remainingRides.length,
+            status: "em_aberto",
+          })
+          .select()
+          .single();
+
+        if (newOpenStmt) {
+          await supabase
+            .from("rides")
+            .update({ statement_id: newOpenStmt.id })
+            .in("id", remainingRides.map((r) => r.id));
+        }
+      }
+
+      setStatement({
+        ...statement,
+        total_amount: selectedRidesTotal,
+        rides_count: selectedRideIds.length,
+        status: "pendente_conferencia",
+      });
+
+      // 4. Monta mensagem formatada para o WhatsApp
+      const driverName = settings?.driver_name || "Motorista";
+      const totalFmt = formatCurrency(selectedRidesTotal);
+      const qtdViagens = selectedRideIds.length;
+      
+      const msg = `Olá, ${driverName}! 👋\n\n` +
+        `Aqui é *${client.name}* do Seven Private Drive.\n` +
+        `Acabei de efetuar o pagamento Pix no valor de *${totalFmt}* referente a *${qtdViagens} viagem(ns)*.\n\n` +
+        `Estou enviando este aviso para você conferir e dar a baixa no sistema. Segue o comprovante em anexo nesta conversa! 📲`;
+
+      // Telefone do motorista (obtido de settings.pix_key se celular, ou padrão)
+      let rawPhone = "";
+      if (settings?.pix_key_type === "Celular" && settings?.pix_key) {
+        rawPhone = settings.pix_key.replace(/\D/g, "");
+      }
+      if (!rawPhone) {
+        rawPhone = "82988883740";
+      }
+      // Garante DDI 55
+      const phoneWithDDI = rawPhone.startsWith("55") ? rawPhone : `55${rawPhone}`;
+
+      const whatsappUrl = `https://api.whatsapp.com/send?phone=${phoneWithDDI}&text=${encodeURIComponent(msg)}`;
+
+      // Abre WhatsApp em nova janela / app
+      window.open(whatsappUrl, "_blank");
+
+      setIsPayModalOpen(false);
+      loadPortalData();
+    } catch (err) {
+      console.error("Erro ao processar aviso via WhatsApp:", err);
+      alert("Erro ao processar solicitação. Tente novamente.");
+    } finally {
+      setSendingWhatsApp(false);
     }
   }
 
@@ -1063,31 +1166,61 @@ export default function PassengerPortal() {
               </button>
             </div>
 
-            {/* Upload de Comprovante */}
-            <div className="bg-surface border border-dashed border-zinc-700 rounded-xl p-4 text-center space-y-2">
-              <FileCheck className="w-8 h-8 text-primary mx-auto" />
-              <div>
-                <p className="text-xs font-semibold text-white">Já realizou o Pix?</p>
-                <p className="text-[11px] text-zinc-400">Envie o comprovante bancário para confirmação da baixa.</p>
+            {/* Finalização do Pagamento: WhatsApp ou Anexo Direto */}
+            <div className="bg-surface border border-zinc-700/80 rounded-xl p-4 space-y-3.5">
+              <div className="text-center">
+                <FileCheck className="w-7 h-7 text-primary mx-auto mb-1" />
+                <p className="text-xs font-bold text-white">Já realizou o Pix?</p>
+                <p className="text-[11px] text-zinc-400">
+                  Finalize avisando pelo WhatsApp ou anexando o arquivo diretamente.
+                </p>
               </div>
 
-              <label className="inline-flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary-hover text-zinc-950 font-semibold text-xs rounded-xl cursor-pointer transition-all">
-                <Upload className="w-3.5 h-3.5" />
-                <span>{uploadingReceipt ? "Enviando..." : "Anexar Comprovante"}</span>
-                <input
-                  type="file"
-                  accept="image/*,application/pdf"
-                  disabled={uploadingReceipt}
-                  onChange={handleUploadReceipt}
-                  className="hidden"
-                />
-              </label>
+              {/* Botão de Destaque: Enviar Comprovante via WhatsApp */}
+              <button
+                type="button"
+                onClick={handleNotifyWhatsApp}
+                disabled={sendingWhatsApp || selectedRideIds.length === 0}
+                className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-zinc-950 font-bold text-xs shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-50"
+              >
+                <MessageCircle className="w-4 h-4 fill-zinc-950" />
+                <span>
+                  {sendingWhatsApp
+                    ? "Registrando e abrindo WhatsApp..."
+                    : "Enviar Comprovante via WhatsApp"}
+                </span>
+              </button>
+              <p className="text-[10px] text-zinc-400 text-center">
+                Abre seu WhatsApp com a mensagem pronta de confirmação para o motorista dar a baixa.
+              </p>
 
-              {receiptSuccess && (
-                <p className="text-xs text-emerald-400 font-semibold animate-fade-in">
-                  ✓ Comprovante enviado com sucesso! Aguarde a validação.
-                </p>
-              )}
+              {/* Divisor Ou */}
+              <div className="flex items-center gap-2 my-1">
+                <div className="h-px bg-border/80 flex-1"></div>
+                <span className="text-[10px] text-zinc-500 uppercase font-semibold">ou se preferir</span>
+                <div className="h-px bg-border/80 flex-1"></div>
+              </div>
+
+              {/* Opção secundária: Anexar Comprovante na Galeria / Arquivo */}
+              <div className="flex flex-col items-center">
+                <label className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-card hover:bg-zinc-800 border border-border text-zinc-300 font-semibold text-xs rounded-xl cursor-pointer transition-all w-full">
+                  <Upload className="w-3.5 h-3.5 text-primary" />
+                  <span>{uploadingReceipt ? "Enviando arquivo..." : "Anexar Comprovante do Aparelho"}</span>
+                  <input
+                    type="file"
+                    accept="image/*,application/pdf"
+                    disabled={uploadingReceipt || selectedRideIds.length === 0}
+                    onChange={handleUploadReceipt}
+                    className="hidden"
+                  />
+                </label>
+
+                {receiptSuccess && (
+                  <p className="text-xs text-emerald-400 font-semibold animate-fade-in mt-2">
+                    ✓ Comprovante enviado com sucesso! Aguarde a validação.
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         </div>
