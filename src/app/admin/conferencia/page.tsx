@@ -34,6 +34,8 @@ export default function PaymentAuditPage() {
   async function loadAuditData() {
     setLoading(true);
     try {
+      const savedDriverId = sessionStorage.getItem("seven_driver_id") || "config-default";
+
       const [{ data: stmts }, { data: cls }, { data: rds }] = await Promise.all([
         supabase
           .from("monthly_statements")
@@ -43,9 +45,21 @@ export default function PaymentAuditPage() {
         supabase.from("rides").select("*").order("ride_date", { ascending: true }),
       ]);
 
-      if (stmts) setStatements(stmts);
-      if (cls) setClients(cls);
-      if (rds) setRides(rds);
+      // Filtragem por motorista:
+      let filteredClients: Client[] = [];
+      if (savedDriverId === "config-default") {
+        filteredClients = (cls || []).filter((c) => !c.token || !c.token.startsWith("drv_"));
+      } else {
+        filteredClients = (cls || []).filter((c) => c.token && c.token.startsWith(savedDriverId));
+      }
+
+      const clientIds = new Set(filteredClients.map((c) => c.id));
+      const filteredStmts = (stmts || []).filter((s) => clientIds.has(s.client_id));
+      const filteredRides = (rds || []).filter((r) => clientIds.has(r.client_id));
+
+      setClients(filteredClients);
+      setStatements(filteredStmts);
+      setRides(filteredRides);
     } catch (err) {
       console.error(err);
     } finally {

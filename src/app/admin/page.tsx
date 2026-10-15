@@ -26,17 +26,41 @@ import {
   Eye,
   Wallet,
   Hourglass,
-  Edit2
+  Edit2,
+  UserCheck,
+  LogOut,
+  KeyRound,
+  UserPlus,
+  BadgeCheck
 } from "lucide-react";
 import { supabase, Client, Ride, MonthlyStatement, Expense, Settings } from "@/lib/supabase";
 import { formatCurrency, formatDateBR, cn } from "@/lib/utils";
 import { format } from "date-fns";
 
 export default function AdminDashboard() {
-  // Autenticação simples por senha mestre
+  // Autenticação e Multi-Motorista
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [currentDriverId, setCurrentDriverId] = useState<string>("config-default");
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [loginMode, setLoginMode] = useState<"login" | "register">("login");
+
+  // Campos de Login
+  const [loginIdentifier, setLoginIdentifier] = useState(""); // Celular ou Senha Master direta
   const [passwordInput, setPasswordInput] = useState("");
-  const [authError, setAuthError] = useState(false);
+  const [authError, setAuthError] = useState("");
+
+  // Campos de Cadastro de Novo Motorista
+  const [regName, setRegName] = useState("");
+  const [regPhone, setRegPhone] = useState("");
+  const [regPassword, setRegPassword] = useState("");
+  const [regPixKey, setRegPixKey] = useState("");
+  const [regPixType, setRegPixType] = useState("Celular");
+  const [registering, setRegistering] = useState(false);
+  const [registerSuccess, setRegisterSuccess] = useState(false);
+
+  // Lista de todos os motoristas cadastrados (para o Super Admin Tony)
+  const [allDrivers, setAllDrivers] = useState<Settings[]>([]);
+  const [isDriversModalOpen, setIsDriversModalOpen] = useState(false);
 
   // Estados principais
   const [clients, setClients] = useState<Client[]>([]);
@@ -97,35 +121,146 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     const isAuth = sessionStorage.getItem("seven_admin_auth");
+    const savedDriverId = sessionStorage.getItem("seven_driver_id") || "config-default";
+    const superAdminFlag = sessionStorage.getItem("seven_is_superadmin") === "true";
+
     if (isAuth === "true") {
       setIsAuthenticated(true);
-      loadAdminData();
+      setCurrentDriverId(savedDriverId);
+      setIsSuperAdmin(superAdminFlag);
+      loadAdminData(savedDriverId, superAdminFlag);
     } else {
       setLoading(false);
     }
   }, []);
 
+  // Login de Motorista ou Super Admin
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
-    setAuthError(false);
+    setAuthError("");
 
-    const { data: setts } = await supabase
-      .from("settings")
-      .select("admin_password")
-      .eq("id", "config-default")
-      .single();
+    try {
+      // 1. Busca configurações gerais de todos os motoristas
+      const { data: allSetts } = await supabase.from("settings").select("*");
+      const defaultTony = allSetts?.find((s) => s.id === "config-default");
 
-    const validPass = setts?.admin_password || "123456";
-    if (passwordInput === validPass) {
-      sessionStorage.setItem("seven_admin_auth", "true");
-      setIsAuthenticated(true);
-      loadAdminData();
-    } else {
-      setAuthError(true);
+      const inputClean = loginIdentifier.trim();
+      const inputPass = passwordInput.trim();
+
+      // Checagem 1: Super Admin Tony (senha direta cadastrada ou celular + senha)
+      // Preserva integralmente a senha cadastrada pelo Tony
+      const tonyPassword = defaultTony?.admin_password || "admin123";
+      const tonyPhoneClean = defaultTony?.pix_key ? defaultTony.pix_key.replace(/\D/g, "") : "82988883740";
+      const inputPhoneClean = inputClean.replace(/\D/g, "");
+
+      const isTonyByDirectPass = inputClean === tonyPassword || inputPass === tonyPassword;
+      const isTonyByPhoneAndPass =
+        (inputPhoneClean === tonyPhoneClean || inputClean.toLowerCase() === "tony") &&
+        (inputPass === tonyPassword || inputClean === tonyPassword);
+
+      if (isTonyByDirectPass || isTonyByPhoneAndPass) {
+        sessionStorage.setItem("seven_admin_auth", "true");
+        sessionStorage.setItem("seven_driver_id", "config-default");
+        sessionStorage.setItem("seven_is_superadmin", "true");
+        setIsAuthenticated(true);
+        setCurrentDriverId("config-default");
+        setIsSuperAdmin(true);
+        loadAdminData("config-default", true);
+        return;
+      }
+
+      // Checagem 2: Outros Motoristas Cadastrados (por telefone ou nome + senha)
+      const matchedDriver = allSetts?.find((drv) => {
+        if (drv.id === "config-default") return false;
+        const drvPhoneClean = (drv.phone || drv.pix_key || "").replace(/\D/g, "");
+        const phoneMatch = inputPhoneClean && drvPhoneClean && (inputPhoneClean === drvPhoneClean || drvPhoneClean.endsWith(inputPhoneClean));
+        const nameMatch = drv.driver_name?.toLowerCase() === inputClean.toLowerCase();
+        const passMatch = drv.admin_password === inputPass || drv.admin_password === inputClean;
+        return (phoneMatch || nameMatch) && passMatch;
+      });
+
+      if (matchedDriver) {
+        sessionStorage.setItem("seven_admin_auth", "true");
+        sessionStorage.setItem("seven_driver_id", matchedDriver.id);
+        sessionStorage.setItem("seven_is_superadmin", "false");
+        setIsAuthenticated(true);
+        setCurrentDriverId(matchedDriver.id);
+        setIsSuperAdmin(false);
+        loadAdminData(matchedDriver.id, false);
+      } else {
+        setAuthError("Credenciais inválidas. Verifique seu WhatsApp/telefone e senha.");
+      }
+    } catch (err) {
+      console.error(err);
+      setAuthError("Erro de conexão ao autenticar. Tente novamente.");
     }
   }
 
-  async function loadAdminData() {
+  // Cadastro de Novo Motorista (Teste Grátis)
+  async function handleRegisterDriver(e: React.FormEvent) {
+    e.preventDefault();
+    setAuthError("");
+
+    if (!regName || !regPhone || !regPassword || !regPixKey) {
+      setAuthError("Preencha todos os campos obrigatórios.");
+      return;
+    }
+
+    setRegistering(true);
+    try {
+      const cleanPhone = regPhone.replace(/\D/g, "");
+      const newDriverId = `drv_${Date.now()}`;
+
+      // Cria a conta do novo motorista na tabela settings
+      const { data: newDriver, error } = await supabase
+        .from("settings")
+        .insert({
+          id: newDriverId,
+          driver_name: regName.trim(),
+          pix_key_type: regPixType,
+          pix_key: regPixKey.trim(),
+          admin_password: regPassword.trim(),
+          phone: cleanPhone,
+          plan: "teste_gratis",
+          plan_status: "ativo",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setRegisterSuccess(true);
+      setTimeout(() => {
+        sessionStorage.setItem("seven_admin_auth", "true");
+        sessionStorage.setItem("seven_driver_id", newDriverId);
+        sessionStorage.setItem("seven_is_superadmin", "false");
+        setIsAuthenticated(true);
+        setCurrentDriverId(newDriverId);
+        setIsSuperAdmin(false);
+        loadAdminData(newDriverId, false);
+      }, 1000);
+    } catch (err) {
+      console.error(err);
+      setAuthError("Erro ao cadastrar motorista. Verifique os dados e tente novamente.");
+    } finally {
+      setRegistering(false);
+    }
+  }
+
+  function handleLogout() {
+    sessionStorage.removeItem("seven_admin_auth");
+    sessionStorage.removeItem("seven_driver_id");
+    sessionStorage.removeItem("seven_is_superadmin");
+    setIsAuthenticated(false);
+    setCurrentDriverId("config-default");
+    setIsSuperAdmin(false);
+    setPasswordInput("");
+    setLoginIdentifier("");
+  }
+
+  async function loadAdminData(driverId: string = currentDriverId, isSuper: boolean = isSuperAdmin) {
     setLoading(true);
     try {
       const [
@@ -133,26 +268,47 @@ export default function AdminDashboard() {
         { data: ridesData },
         { data: stmtsData },
         { data: expensesData },
-        { data: settsData },
+        { data: allSettsData },
       ] = await Promise.all([
         supabase.from("clients").select("*").order("name"),
         supabase.from("rides").select("*").order("created_at", { ascending: false }),
         supabase.from("monthly_statements").select("*").order("created_at", { ascending: false }),
-        supabase.from("expenses").select("*").order("expense_date", { ascending: false }),
-        supabase.from("settings").select("*").eq("id", "config-default").single(),
+        supabase.from("expenses").select("*").order("data_despesa", { ascending: false }),
+        supabase.from("settings").select("*"),
       ]);
 
-      if (clientsData) setClients(clientsData);
-      if (ridesData) setRides(ridesData);
-      if (stmtsData) setStatements(stmtsData);
-      if (expensesData) setExpenses(expensesData);
-      if (settsData) {
-        setSettings(settsData);
-        setPixDriverName(settsData.driver_name || "");
-        setPixType(settsData.pix_key_type || "Chave Aleatória");
-        setPixKeyVal(settsData.pix_key || "");
-        setAdminPassVal(settsData.admin_password || "123456");
+      if (allSettsData) setAllDrivers(allSettsData);
+
+      const activeSettings = allSettsData?.find((s) => s.id === driverId) ||
+        allSettsData?.find((s) => s.id === "config-default") || null;
+
+      if (activeSettings) {
+        setSettings(activeSettings);
+        setPixDriverName(activeSettings.driver_name || "");
+        setPixType(activeSettings.pix_key_type || "Celular");
+        setPixKeyVal(activeSettings.pix_key || "");
+        setAdminPassVal(activeSettings.admin_password || "");
       }
+
+      // FILTRAGEM INTELIGENTE DE DADOS POR MOTORISTA:
+      // Para Tony ("config-default"): visualiza seus passageiros titulares (Lays, Jorge e qualquer token sem prefixo de outro motorista)
+      // Para Novos Motoristas ("drv_..."): visualiza apenas passageiros cadastrados por ele (cujo token começa com seu id)
+      let filteredClients: Client[] = [];
+      if (driverId === "config-default") {
+        filteredClients = (clientsData || []).filter((c) => !c.token || !c.token.startsWith("drv_"));
+      } else {
+        filteredClients = (clientsData || []).filter((c) => c.token && c.token.startsWith(driverId));
+      }
+
+      const clientIds = new Set(filteredClients.map((c) => c.id));
+      const filteredRides = (ridesData || []).filter((r) => clientIds.has(r.client_id));
+      const filteredStmts = (stmtsData || []).filter((s) => clientIds.has(s.client_id));
+
+      // Despesas: Tony vê as despesas operacionais registradas; novos motoristas começam com as suas
+      setClients(filteredClients);
+      setRides(filteredRides);
+      setStatements(filteredStmts);
+      setExpenses(driverId === "config-default" ? (expensesData || []) : []);
     } catch (err) {
       console.error(err);
     } finally {
@@ -168,7 +324,7 @@ export default function AdminDashboard() {
       const { data, error } = await supabase
         .from("settings")
         .upsert({
-          id: "config-default",
+          id: currentDriverId,
           driver_name: pixDriverName,
           pix_key_type: pixType,
           pix_key: pixKeyVal,
@@ -351,14 +507,17 @@ export default function AdminDashboard() {
     if (!newClientName) return;
 
     try {
-      const rawToken = Math.random().toString(36).substring(2, 10) + Date.now().toString(36).slice(-4);
+      const randomSuffix = Math.random().toString(36).substring(2, 10) + Date.now().toString(36).slice(-4);
+      // Se for Tony (config-default), mantém token limpo como sempre foi
+      // Se for outro motorista ("drv_..."), prefixa o token para vincular automaticamente
+      const finalToken = currentDriverId === "config-default" ? randomSuffix : `${currentDriverId}--${randomSuffix}`;
 
       const { data: newC, error } = await supabase
         .from("clients")
         .insert({
           name: newClientName,
           phone: newClientPhone || null,
-          token: rawToken,
+          token: finalToken,
           billing_due_day: parseInt(newClientDueDay) || 10,
         })
         .select()
@@ -512,44 +671,214 @@ export default function AdminDashboard() {
     setTimeout(() => setCopiedToken(null), 2500);
   }
 
-  // Tela de Login Admin
+  // Tela de Autenticação / Cadastro de Motorista
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background px-4">
+      <div className="min-h-screen flex items-center justify-center bg-background px-4 py-8">
         <div className="bg-card border border-border w-full max-w-sm rounded-2xl p-6 shadow-2xl space-y-4">
           <div className="text-center">
-            <div className="w-12 h-12 rounded-2xl bg-accent/10 border border-accent/20 flex items-center justify-center text-accent mx-auto mb-3">
+            <div className="w-12 h-12 rounded-2xl bg-accent/10 border border-accent/20 flex items-center justify-center text-accent mx-auto mb-3 shadow-lg shadow-accent/5">
               <Shield className="w-6 h-6" />
             </div>
             <h1 className="text-lg font-bold text-white">Painel do Motorista</h1>
-            <p className="text-xs text-zinc-400">Digite a senha master para gerenciar o sistema.</p>
+            <p className="text-xs text-zinc-400">
+              {loginMode === "login"
+                ? "Acesse seu painel executivo de transporte"
+                : "Cadastre-se para testar a plataforma grátis"}
+            </p>
           </div>
 
-          <form onSubmit={handleLogin} className="space-y-3">
-            <div>
-              <input
-                type="password"
-                required
-                placeholder="Senha Master"
-                value={passwordInput}
-                onChange={(e) => setPasswordInput(e.target.value)}
-                className="w-full bg-surface border border-border rounded-xl px-3 py-2.5 text-white text-sm focus:border-accent focus:outline-none text-center tracking-widest"
-              />
-            </div>
-
-            {authError && (
-              <p className="text-xs text-rose-400 text-center font-medium">
-                Senha incorreta. Tente novamente.
-              </p>
-            )}
-
+          {/* Abas: Entrar vs Criar Conta */}
+          <div className="flex bg-surface p-1 rounded-xl border border-border/80">
             <button
-              type="submit"
-              className="w-full py-2.5 rounded-xl bg-accent hover:bg-accent-hover text-white font-semibold text-xs transition-all shadow-md shadow-accent/20"
+              type="button"
+              onClick={() => {
+                setLoginMode("login");
+                setAuthError("");
+              }}
+              className={cn(
+                "flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all text-center",
+                loginMode === "login"
+                  ? "bg-primary text-zinc-950 shadow-sm shadow-primary/20"
+                  : "text-zinc-400 hover:text-white"
+              )}
             >
-              Entrar no Painel
+              Já sou Motorista
             </button>
-          </form>
+            <button
+              type="button"
+              onClick={() => {
+                setLoginMode("register");
+                setAuthError("");
+              }}
+              className={cn(
+                "flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all text-center",
+                loginMode === "register"
+                  ? "bg-accent text-white shadow-sm shadow-accent/20"
+                  : "text-zinc-400 hover:text-white"
+              )}
+            >
+              Novo Motorista (Grátis)
+            </button>
+          </div>
+
+          {/* MODO 1: LOGIN */}
+          {loginMode === "login" && (
+            <form onSubmit={handleLogin} className="space-y-3 pt-1">
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                  WhatsApp ou Telefone
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: (82) 98888-3740 ou seu usuário"
+                  value={loginIdentifier}
+                  onChange={(e) => setLoginIdentifier(e.target.value)}
+                  className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-xs focus:border-primary focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                  Senha de Acesso
+                </label>
+                <input
+                  type="password"
+                  required
+                  placeholder="Sua senha cadastrada"
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-xs focus:border-primary focus:outline-none tracking-wider"
+                />
+              </div>
+
+              {authError && (
+                <p className="text-xs text-rose-400 text-center font-medium bg-rose-500/10 border border-rose-500/20 p-2 rounded-xl">
+                  {authError}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                className="w-full py-2.5 rounded-xl bg-primary hover:bg-primary-hover text-zinc-950 font-bold text-xs transition-all shadow-md shadow-primary/20"
+              >
+                Entrar no Meu Painel
+              </button>
+
+              <div className="pt-2 text-center">
+                <a
+                  href="/"
+                  className="text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors"
+                >
+                  ← Voltar para o Portal de Passageiros
+                </a>
+              </div>
+            </form>
+          )}
+
+          {/* MODO 2: CADASTRO NOVO MOTORISTA (TESTE GRÁTIS) */}
+          {loginMode === "register" && (
+            <form onSubmit={handleRegisterDriver} className="space-y-3 pt-1">
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                  Seu Nome Completo *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ex: Carlos Oliveira"
+                  value={regName}
+                  onChange={(e) => setRegName(e.target.value)}
+                  className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-xs focus:border-accent focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                  Seu WhatsApp / Telefone *
+                </label>
+                <input
+                  type="tel"
+                  required
+                  placeholder="Ex: (82) 99999-9999"
+                  value={regPhone}
+                  onChange={(e) => setRegPhone(e.target.value)}
+                  className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-xs focus:border-accent focus:outline-none"
+                />
+                <span className="text-[10px] text-zinc-500">Será seu identificador de acesso.</span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                    Tipo de Chave Pix *
+                  </label>
+                  <select
+                    value={regPixType}
+                    onChange={(e) => setRegPixType(e.target.value)}
+                    className="w-full bg-surface border border-border rounded-xl px-2 py-2 text-white text-xs focus:border-accent focus:outline-none"
+                  >
+                    <option value="Celular">Celular</option>
+                    <option value="CPF">CPF</option>
+                    <option value="CNPJ">CNPJ</option>
+                    <option value="E-mail">E-mail</option>
+                    <option value="Chave Aleatória">Chave Aleatória</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                    Chave Pix Real *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Sua chave Pix"
+                    value={regPixKey}
+                    onChange={(e) => setRegPixKey(e.target.value)}
+                    className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-xs focus:border-accent focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                  Crie sua Senha de Acesso *
+                </label>
+                <input
+                  type="password"
+                  required
+                  placeholder="Mínimo de 4 dígitos"
+                  value={regPassword}
+                  onChange={(e) => setRegPassword(e.target.value)}
+                  className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-white text-xs focus:border-accent focus:outline-none"
+                />
+              </div>
+
+              {authError && (
+                <p className="text-xs text-rose-400 text-center font-medium bg-rose-500/10 border border-rose-500/20 p-2 rounded-xl">
+                  {authError}
+                </p>
+              )}
+
+              {registerSuccess && (
+                <p className="text-xs text-emerald-400 text-center font-bold bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-xl">
+                  ✓ Cadastro realizado com sucesso! Abrindo seu painel...
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={registering}
+                className="w-full py-2.5 rounded-xl bg-accent hover:bg-accent-hover text-white font-bold text-xs transition-all shadow-md shadow-accent/20 disabled:opacity-50"
+              >
+                {registering ? "Criando sua conta..." : "Criar Conta & Testar Grátis"}
+              </button>
+
+              <p className="text-[10px] text-zinc-500 text-center">
+                Acesso imediato de avaliação. Não exigimos cartão de crédito.
+              </p>
+            </form>
+          )}
         </div>
       </div>
     );
@@ -599,6 +928,28 @@ export default function AdminDashboard() {
               )}
             </a>
 
+            {/* Botão Gestão de Motoristas (Exclusivo para Super Admin Tony) */}
+            {isSuperAdmin && (
+              <button
+                onClick={() => setIsDriversModalOpen(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-accent/15 border border-accent/30 text-accent hover:bg-accent/25 text-xs font-bold transition-all"
+                title="Gestão dos Motoristas cadastrados na plataforma"
+              >
+                <Users className="w-3.5 h-3.5 text-accent" />
+                <span className="hidden sm:inline">Motoristas</span>
+                <span className="px-1.5 py-0.2 bg-accent text-white text-[10px] rounded-full font-black">
+                  {allDrivers.length}
+                </span>
+              </button>
+            )}
+
+            {/* Badge do Plano do Motorista */}
+            {!isSuperAdmin && (
+              <span className="text-[10px] px-2 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-semibold flex items-center gap-1">
+                <BadgeCheck className="w-3 h-3" /> Teste Grátis
+              </span>
+            )}
+
             {/* Botão Configurações Pix */}
             <button
               onClick={() => setIsSettingsModalOpen(true)}
@@ -620,6 +971,15 @@ export default function AdminDashboard() {
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Lançar Corrida</span>
+            </button>
+
+            {/* Botão Sair / Logout */}
+            <button
+              onClick={handleLogout}
+              className="p-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-400 transition-all"
+              title="Sair do painel"
+            >
+              <LogOut className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
@@ -1590,6 +1950,124 @@ export default function AdminDashboard() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: GESTÃO DE MOTORISTAS DA PLATAFORMA (SUPER ADMIN TONY) */}
+      {isDriversModalOpen && isSuperAdmin && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-card border border-border w-full max-w-2xl rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Shield className="w-5 h-5 text-accent" /> Gestão de Motoristas da Plataforma
+                </h3>
+                <p className="text-xs text-zinc-400">
+                  Visão executiva dos motoristas cadastrados para teste e monetização
+                </p>
+              </div>
+              <button
+                onClick={() => setIsDriversModalOpen(false)}
+                className="text-zinc-400 hover:text-white text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Resumo da Plataforma */}
+            <div className="grid grid-cols-3 gap-2.5">
+              <div className="bg-surface border border-border p-3 rounded-xl">
+                <span className="text-[11px] text-zinc-400 block">Total de Motoristas</span>
+                <span className="text-xl font-bold text-white mt-1 block">{allDrivers.length}</span>
+              </div>
+              <div className="bg-surface border border-border p-3 rounded-xl">
+                <span className="text-[11px] text-zinc-400 block">Em Teste Grátis</span>
+                <span className="text-xl font-bold text-emerald-400 mt-1 block">
+                  {allDrivers.filter((d) => d.id !== "config-default").length}
+                </span>
+              </div>
+              <div className="bg-surface border border-border p-3 rounded-xl">
+                <span className="text-[11px] text-zinc-400 block">Motorista Titular</span>
+                <span className="text-xl font-bold text-primary mt-1 block">Tony</span>
+              </div>
+            </div>
+
+            {/* Lista dos Motoristas */}
+            <div className="space-y-2 pt-2">
+              <span className="text-xs font-bold text-zinc-300 block">Contas Registradas:</span>
+              <div className="space-y-2">
+                {allDrivers.map((drv) => {
+                  const isMaster = drv.id === "config-default";
+                  return (
+                    <div
+                      key={drv.id}
+                      className={cn(
+                        "p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3",
+                        isMaster
+                          ? "bg-accent/10 border-accent/30"
+                          : "bg-surface border-border"
+                      )}
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-white">{drv.driver_name}</span>
+                          {isMaster ? (
+                            <span className="text-[10px] bg-accent text-white px-2 py-0.2 rounded-full font-bold">
+                              SUPER ADMIN (TITULAR)
+                            </span>
+                          ) : (
+                            <span className="text-[10px] bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 px-2 py-0.2 rounded-full font-bold">
+                              TESTE GRÁTIS
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-400 mt-1">
+                          <span>WhatsApp: {drv.phone || drv.pix_key || "Não inf."}</span>
+                          <span>Pix: {drv.pix_key} ({drv.pix_key_type})</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 self-end sm:self-center">
+                        {!isMaster && (
+                          <span className="text-[11px] text-zinc-500 bg-card px-2.5 py-1 rounded-lg border border-border">
+                            Uso Liberado (Gratuito)
+                          </span>
+                        )}
+                        {isMaster && (
+                          <span className="text-[11px] text-accent font-semibold bg-accent/10 px-2.5 py-1 rounded-lg border border-accent/20">
+                            Proprietário
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Aviso Estratégico de Monetização */}
+            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex items-start gap-2.5">
+              <span className="text-base">💡</span>
+              <div>
+                <p className="font-bold">Monetização Preparada:</p>
+                <p className="text-[11px] text-zinc-300 mt-0.5">
+                  Atualmente todos os motoristas cadastrados desfrutam de acesso total e gratuito para teste.
+                  Futuramente, quando você decidir instituir a taxa de adesão ou mensalidade (ex: via Pix),
+                  o sistema já possui os identificadores de cada motorista preparados para ativar bloqueio e cobrança!
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-border">
+              <button
+                type="button"
+                onClick={() => setIsDriversModalOpen(false)}
+                className="px-4 py-2 rounded-xl bg-surface border border-border hover:bg-zinc-800 text-xs font-semibold text-white transition-all"
+              >
+                Fechar Painel de Motoristas
+              </button>
+            </div>
           </div>
         </div>
       )}

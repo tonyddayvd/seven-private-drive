@@ -111,14 +111,33 @@ export default function PassengerPortal() {
 
       setClient(clientData);
 
-      // 2. Busca configurações globais (Pix, nome)
+      // 2. Busca configurações do motorista responsável por este passageiro
+      // Se o token contiver o prefixo do motorista (ex: "drv_abc123--token"), busca o motorista correspondente
+      let driverSettingId = "config-default";
+      if (clientData.token && clientData.token.includes("--")) {
+        const parts = clientData.token.split("--");
+        if (parts[0] && parts[0].startsWith("drv_")) {
+          driverSettingId = parts[0];
+        }
+      }
+
       const { data: settingsData } = await supabase
         .from("settings")
         .select("*")
-        .eq("id", "config-default")
-        .single();
+        .eq("id", driverSettingId)
+        .maybeSingle();
 
-      if (settingsData) setSettings(settingsData);
+      // Se não encontrar o motorista específico, utiliza config-default como garantia absoluta
+      if (settingsData) {
+        setSettings(settingsData);
+      } else {
+        const { data: defaultSettings } = await supabase
+          .from("settings")
+          .select("*")
+          .eq("id", "config-default")
+          .single();
+        if (defaultSettings) setSettings(defaultSettings);
+      }
 
       // 3. Busca faturas do cliente: prioriza 'em_aberto', senão 'pendente_conferencia', senão 'recusado'
       const refMonth = format(new Date(), "yyyy-MM");

@@ -55,11 +55,17 @@ export type Expense = {
   created_at: string;
 };
 
-export type Settings = {
-  id: string;
+export type DriverAccount = {
+  id: string; // "config-default" para Tony (Master) ou "drv_[timestamp]" para novos motoristas
   driver_name: string;
   pix_key_type: string;
   pix_key: string;
   admin_password?: string;
+  phone?: string;
+  plan?: "master" | "teste_gratis" | "ativo" | "bloqueado";
+  plan_status?: string;
+  created_at?: string;
   updated_at?: string;
 };
+
+export type Settings = DriverAccount;
