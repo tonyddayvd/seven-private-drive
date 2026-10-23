@@ -31,11 +31,22 @@ import {
   LogOut,
   KeyRound,
   UserPlus,
-  BadgeCheck
+  BadgeCheck,
+  Calendar as CalendarIcon,
+  ChevronLeft
 } from "lucide-react";
 import { supabase, Client, Ride, MonthlyStatement, Expense, Settings } from "@/lib/supabase";
 import { formatCurrency, formatDateBR, cn } from "@/lib/utils";
-import { format } from "date-fns";
+import {
+  format,
+  startOfMonth,
+  endOfMonth,
+  eachDayOfInterval,
+  addMonths,
+  subMonths,
+  isToday
+} from "date-fns";
+import { ptBR } from "date-fns/locale";
 
 export default function AdminDashboard() {
   // Autenticação e Multi-Motorista
@@ -78,6 +89,19 @@ export default function AdminDashboard() {
   const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
   const [deletingClient, setDeletingClient] = useState(false);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
+
+  // Modal de Calendário Rápido do Passageiro (Visão do Gestor)
+  const [calendarClient, setCalendarClient] = useState<Client | null>(null);
+  const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState<Date>(new Date());
+  const [calendarSelectedDate, setCalendarSelectedDate] = useState<string>(format(new Date(), "yyyy-MM-dd"));
+  const [calendarRideAmount, setCalendarRideAmount] = useState("");
+  const [calendarRideOrigin, setCalendarRideOrigin] = useState("");
+  const [calendarRideDest, setCalendarRideDest] = useState("");
+  const [calendarRideNotes, setCalendarRideNotes] = useState("");
+  const [calendarSubmittingRide, setCalendarSubmittingRide] = useState(false);
+  const [rideToDelete, setRideToDelete] = useState<Ride | null>(null);
+  const [deletingRide, setDeletingRide] = useState(false);
 
   // Modal e Formulário Editar Passageiro
   const [clientToEdit, setClientToEdit] = useState<Client | null>(null);
@@ -658,6 +682,66 @@ export default function AdminDashboard() {
     } catch (err) {
       console.error(err);
       alert("Erro ao lançar corrida.");
+    }
+  }
+
+  // Ação de Lançar Corrida Rápida diretamente no Calendário do Passageiro pelo Gestor
+  async function handleCreateCalendarRide(e: React.FormEvent) {
+    e.preventDefault();
+    if (!calendarClient || !calendarRideAmount) return;
+
+    setCalendarSubmittingRide(true);
+    try {
+      const parsedAmount = parseFloat(calendarRideAmount.replace(",", "."));
+      const { data: newR, error } = await supabase
+        .from("rides")
+        .insert({
+          client_id: calendarClient.id,
+          ride_date: calendarSelectedDate,
+          origin: calendarRideOrigin || "Lançado pelo Gestor",
+          destination: calendarRideDest || "Lançado pelo Gestor",
+          amount: parsedAmount,
+          status: "confirmada", // Como é o gestor lançando na conferência, já entra confirmada
+          created_by: "driver",
+          notes: calendarRideNotes || null,
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setRides((prev) => [newR, ...prev]);
+      setCalendarRideAmount("");
+      setCalendarRideOrigin("");
+      setCalendarRideDest("");
+      setCalendarRideNotes("");
+    } catch (err) {
+      console.error(err);
+      alert("Erro ao lançar corrida no calendário.");
+    } finally {
+      setCalendarSubmittingRide(false);
+    }
+  }
+
+  // Ação de Excluir Corrida diretamente do Calendário
+  async function handleDeleteRide() {
+    if (!rideToDelete) return;
+    setDeletingRide(true);
+    try {
+      const { error } = await supabase
+        .from("rides")
+        .delete()
+        .eq("id", rideToDelete.id);
+
+      if (error) throw error;
+
+      setRides((prev) => prev.filter((r) => r.id !== rideToDelete.id));
+      setRideToDelete(null);
+    } catch (err) {
+      console.error(err);
+      alert("Erro ao excluir corrida.");
+    } finally {
+      setDeletingRide(false);
     }
   }
 
@@ -1358,18 +1442,31 @@ export default function AdminDashboard() {
 
                   <div className="pt-2 border-t border-border/60 flex items-center gap-1.5">
                     <button
-                      onClick={() => copyWhatsAppLink(c)}
-                      className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-card hover:bg-zinc-800 border border-border text-[11px] font-semibold text-white transition-all"
+                      onClick={() => {
+                        setCalendarClient(c);
+                        setCalendarMonth(new Date());
+                        setCalendarSelectedDate(format(new Date(), "yyyy-MM-dd"));
+                        setIsCalendarModalOpen(true);
+                      }}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-primary/10 hover:bg-primary/20 border border-primary/30 text-[11px] font-bold text-primary transition-all"
+                      title="Ver Calendário do Passageiro e Lançar/Excluir Corridas"
                     >
-                      <Copy className="w-3 h-3 text-primary" />
-                      <span>{copiedToken === c.token ? "Copiado!" : "Link WhatsApp"}</span>
+                      <CalendarIcon className="w-3.5 h-3.5" />
+                      <span>Ver Calendário</span>
+                    </button>
+                    <button
+                      onClick={() => copyWhatsAppLink(c)}
+                      className="p-1.5 rounded-lg bg-card hover:bg-zinc-800 border border-border text-zinc-300 hover:text-white"
+                      title="Copiar Link para WhatsApp"
+                    >
+                      <Copy className="w-3.5 h-3.5 text-zinc-400" />
                     </button>
                     <a
                       href={`/p/${c.token}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="p-1.5 rounded-lg bg-card hover:bg-zinc-800 border border-border text-zinc-400 hover:text-white"
-                      title="Abrir como Passageiro"
+                      title="Abrir como Passageiro (Nova Aba)"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
                     </a>
@@ -2066,6 +2163,341 @@ export default function AdminDashboard() {
                 className="px-4 py-2 rounded-xl bg-surface border border-border hover:bg-zinc-800 text-xs font-semibold text-white transition-all"
               >
                 Fechar Painel de Motoristas
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CALENDÁRIO INTERATIVO DO PASSAGEIRO (VISÃO DO GESTOR) */}
+      {isCalendarModalOpen && calendarClient && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-4">
+          <div className="bg-card border border-border w-full max-w-xl rounded-2xl p-4 sm:p-6 shadow-2xl space-y-4 max-h-[92vh] overflow-y-auto">
+            {/* Cabeçalho do Modal */}
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div>
+                <span className="text-[11px] text-primary font-bold uppercase tracking-wider block">
+                  Calendário de Corridas
+                </span>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Car className="w-4 h-4 text-primary" /> {calendarClient.name}
+                </h3>
+              </div>
+              <button
+                onClick={() => {
+                  setIsCalendarModalOpen(false);
+                  setCalendarClient(null);
+                }}
+                className="text-zinc-400 hover:text-white text-base p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Controle de Mês do Calendário */}
+            <div className="flex items-center justify-between bg-surface p-2.5 rounded-xl border border-border/70">
+              <button
+                type="button"
+                onClick={() => setCalendarMonth(subMonths(calendarMonth, 1))}
+                className="p-1.5 rounded-lg bg-card hover:bg-zinc-800 text-zinc-300"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <span className="text-xs font-bold capitalize text-white">
+                {format(calendarMonth, "MMMM yyyy", { locale: ptBR })}
+              </span>
+              <button
+                type="button"
+                onClick={() => setCalendarMonth(addMonths(calendarMonth, 1))}
+                className="p-1.5 rounded-lg bg-card hover:bg-zinc-800 text-zinc-300"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Grid de Dias */}
+            {(() => {
+              const mStart = startOfMonth(calendarMonth);
+              const mEnd = endOfMonth(calendarMonth);
+              const dList = eachDayOfInterval({ start: mStart, end: mEnd });
+              const sIndex = mStart.getDay();
+              const clientRidesList = rides.filter(
+                (r) => r.client_id === calendarClient.id && r.status !== "cancelada"
+              );
+
+              return (
+                <div>
+                  <div className="grid grid-cols-7 gap-1 text-center mb-1">
+                    {["D", "S", "T", "Q", "Q", "S", "S"].map((d, i) => (
+                      <span key={i} className="text-[10px] font-bold text-zinc-400 py-0.5">
+                        {d}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-7 gap-1">
+                    {Array.from({ length: sIndex }).map((_, i) => (
+                      <div key={`cal-empty-${i}`} className="h-12 rounded-lg bg-transparent"></div>
+                    ))}
+
+                    {dList.map((day) => {
+                      const dateKey = format(day, "yyyy-MM-dd");
+                      const dayRides = clientRidesList.filter((r) => r.ride_date === dateKey);
+                      const isPaid = dayRides.some((r) => r.status === "faturada");
+                      const isConfirmed = dayRides.some((r) => r.status === "confirmada");
+                      const isPending = dayRides.some((r) => r.status === "pendente_confirmacao");
+                      const hasR = dayRides.length > 0;
+                      const dayTotal = dayRides.reduce((acc, r) => acc + Number(r.amount), 0);
+                      const isSelected = calendarSelectedDate === dateKey;
+
+                      let cellBg = "bg-surface/50 border-border/50 text-zinc-300 hover:border-zinc-600";
+                      if (hasR) {
+                        if (isPaid && !isConfirmed && !isPending) {
+                          cellBg = "bg-blue-500/15 border-blue-500/40 text-blue-300";
+                        } else if (isConfirmed) {
+                          cellBg = "bg-emerald-500/15 border-emerald-500/40 text-emerald-300";
+                        } else if (isPending) {
+                          cellBg = "bg-amber-500/15 border-amber-500/40 text-amber-300";
+                        }
+                      }
+
+                      return (
+                        <button
+                          key={dateKey}
+                          type="button"
+                          onClick={() => setCalendarSelectedDate(dateKey)}
+                          className={cn(
+                            "h-12 rounded-xl p-1 flex flex-col justify-between items-center transition-all border text-left relative",
+                            isSelected && "ring-2 ring-primary border-primary",
+                            isToday(day) && !isSelected && "ring-1 ring-accent",
+                            cellBg
+                          )}
+                        >
+                          <span className="text-[10px] font-bold leading-none">{format(day, "d")}</span>
+                          {hasR && (
+                            <div className="w-full text-center">
+                              <span className="text-[8px] font-black block truncate">
+                                R${dayTotal.toFixed(0)}
+                              </span>
+                              <span className="w-1 h-1 rounded-full mx-auto block mt-0.5 bg-current"></span>
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Legenda */}
+                  <div className="flex flex-wrap items-center justify-center gap-3 mt-2.5 pt-2 border-t border-border/50 text-[10px] text-zinc-400">
+                    <span className="flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-blue-500"></span> Paga
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span> Confirmada (A Pagar)
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-amber-500"></span> Pendente Checagem
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Painel do Dia Selecionado: Corridas Existentes e Ação de Excluir */}
+            <div className="bg-surface border border-border rounded-xl p-3 space-y-3">
+              <div className="flex items-center justify-between border-b border-border/60 pb-2">
+                <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-primary" />
+                  Corridas no Dia {formatDateBR(calendarSelectedDate)}
+                </span>
+                <span className="text-[11px] text-zinc-400">
+                  {rides.filter((r) => r.client_id === calendarClient.id && r.ride_date === calendarSelectedDate && r.status !== "cancelada").length} corrida(s)
+                </span>
+              </div>
+
+              {/* Lista das Corridas Deste Dia com Botão de Excluir */}
+              {(() => {
+                const dayR = rides.filter(
+                  (r) => r.client_id === calendarClient.id && r.ride_date === calendarSelectedDate && r.status !== "cancelada"
+                );
+
+                if (dayR.length === 0) {
+                  return (
+                    <p className="text-xs text-zinc-400 py-1 italic text-center">
+                      Nenhuma corrida registrada neste dia. Use o formulário abaixo para adicionar uma!
+                    </p>
+                  );
+                }
+
+                return (
+                  <div className="space-y-1.5">
+                    {dayR.map((r) => (
+                      <div
+                        key={r.id}
+                        className={cn(
+                          "p-2.5 rounded-lg border text-xs flex items-center justify-between gap-2",
+                          r.status === "faturada"
+                            ? "bg-blue-500/10 border-blue-500/30 text-white"
+                            : r.status === "confirmada"
+                            ? "bg-emerald-500/10 border-emerald-500/30 text-white"
+                            : "bg-amber-500/10 border-amber-500/30 text-white"
+                        )}
+                      >
+                        <div className="truncate min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={cn(
+                                "text-[9px] px-1.5 py-0.2 rounded font-black uppercase",
+                                r.status === "faturada"
+                                  ? "bg-blue-500/20 text-blue-300"
+                                  : r.status === "confirmada"
+                                  ? "bg-emerald-500/20 text-emerald-300"
+                                  : "bg-amber-500/20 text-amber-300"
+                              )}
+                            >
+                              {r.status === "faturada" ? "Paga" : r.status === "confirmada" ? "A Pagar" : "Pendente"}
+                            </span>
+                            <span className="font-semibold text-white truncate">
+                              {r.origin} ➔ {r.destination}
+                            </span>
+                          </div>
+                          {r.notes && <p className="text-[10px] text-zinc-400 mt-0.5 truncate">Obs: {r.notes}</p>}
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="font-bold text-white">{formatCurrency(Number(r.amount))}</span>
+                          {/* Botão de Excluir Corrida */}
+                          <button
+                            type="button"
+                            onClick={() => setRideToDelete(r)}
+                            className="p-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 transition-all"
+                            title="Excluir esta corrida"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+
+              {/* Formulário Rápido para Adicionar Corrida neste Dia */}
+              <form onSubmit={handleCreateCalendarRide} className="pt-2 border-t border-border/60 space-y-2">
+                <span className="text-[11px] font-bold text-primary block">
+                  + Lançar Corrida em {formatDateBR(calendarSelectedDate)}:
+                </span>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-semibold text-zinc-400 mb-0.5">Valor (R$) *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: 40,00"
+                      value={calendarRideAmount}
+                      onChange={(e) => setCalendarRideAmount(e.target.value)}
+                      className="w-full bg-card border border-border rounded-lg px-2.5 py-1.5 text-white text-xs focus:border-primary focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-zinc-400 mb-0.5">Origem</label>
+                    <input
+                      type="text"
+                      placeholder="Ex: Casa"
+                      value={calendarRideOrigin}
+                      onChange={(e) => setCalendarRideOrigin(e.target.value)}
+                      className="w-full bg-card border border-border rounded-lg px-2.5 py-1.5 text-white text-xs focus:border-primary focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-semibold text-zinc-400 mb-0.5">Destino</label>
+                    <input
+                      type="text"
+                      placeholder="Ex: Trabalho"
+                      value={calendarRideDest}
+                      onChange={(e) => setCalendarRideDest(e.target.value)}
+                      className="w-full bg-card border border-border rounded-lg px-2.5 py-1.5 text-white text-xs focus:border-primary focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-zinc-400 mb-0.5">Obs (Opcional)</label>
+                    <input
+                      type="text"
+                      placeholder="Ex: Ida e volta"
+                      value={calendarRideNotes}
+                      onChange={(e) => setCalendarRideNotes(e.target.value)}
+                      className="w-full bg-card border border-border rounded-lg px-2.5 py-1.5 text-white text-xs focus:border-primary focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={calendarSubmittingRide}
+                  className="w-full py-2 rounded-xl bg-primary hover:bg-primary-hover text-zinc-950 font-bold text-xs transition-all shadow-md shadow-primary/20 flex items-center justify-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>{calendarSubmittingRide ? "Salvando corrida..." : "Adicionar Corrida Neste Dia"}</span>
+                </button>
+              </form>
+            </div>
+
+            {/* Rodapé com Atalho de Visualizar Portal */}
+            <div className="flex items-center justify-between pt-2 border-t border-border">
+              <a
+                href={`/p/${calendarClient.token}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-primary hover:underline flex items-center gap-1 font-semibold"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Ver Portal do Passageiro em Nova Aba</span>
+              </a>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCalendarModalOpen(false);
+                  setCalendarClient(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-surface border border-border text-xs font-semibold text-white"
+              >
+                Concluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE CONFIRMAÇÃO: EXCLUIR CORRIDA */}
+      {rideToDelete && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-card border border-border w-full max-w-sm rounded-2xl p-5 shadow-2xl space-y-3">
+            <h4 className="text-sm font-bold text-white flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-500" /> Confirmar Exclusão de Corrida
+            </h4>
+            <p className="text-xs text-zinc-400">
+              Deseja realmente remover esta corrida de <strong>{formatCurrency(Number(rideToDelete.amount))}</strong> do dia <strong>{formatDateBR(rideToDelete.ride_date)}</strong>?
+            </p>
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setRideToDelete(null)}
+                className="flex-1 py-2 rounded-xl bg-surface border border-border text-zinc-300 text-xs font-medium"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteRide}
+                disabled={deletingRide}
+                className="flex-1 py-2 rounded-xl bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold"
+              >
+                {deletingRide ? "Excluindo..." : "Excluir Corrida"}
               </button>
             </div>
           </div>
