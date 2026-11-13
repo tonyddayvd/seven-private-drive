@@ -41,6 +41,7 @@ export type MonthlyStatement = {
   status: "em_aberto" | "pendente_conferencia" | "pago" | "recusado" | "atrasado";
   receipt_url?: string | null;
   refusal_reason?: string | null;
+  payment_method?: "pix" | "cartao" | string | null;
   paid_at?: string | null;
   created_at: string;
 };

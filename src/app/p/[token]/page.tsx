@@ -22,7 +22,8 @@ import {
   Shield,
   MessageCircle,
   History,
-  Receipt
+  Receipt,
+  Banknote
 } from "lucide-react";
 import { supabase, Client, Ride, MonthlyStatement, Settings } from "@/lib/supabase";
 import { formatCurrency, formatDateBR, cn } from "@/lib/utils";
@@ -63,14 +64,18 @@ export default function PassengerPortal() {
   const [rideNotes, setRideNotes] = useState("");
   const [submittingRide, setSubmittingRide] = useState(false);
 
-  // Modal de Pagamento Pix
+  // Modal de Pagamento Pix, Cartão de Crédito e Dinheiro
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<"pix" | "cartao" | "dinheiro">("pix");
+  const [cashAmountPaid, setCashAmountPaid] = useState("");
+  const [sendingCashPayment, setSendingCashPayment] = useState(false);
   const [selectedRideIds, setSelectedRideIds] = useState<string[]>([]);
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState("");
   const [copySuccess, setCopySuccess] = useState(false);
   const [uploadingReceipt, setUploadingReceipt] = useState(false);
   const [receiptSuccess, setReceiptSuccess] = useState(false);
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
+  const [requestingCardLink, setRequestingCardLink] = useState(false);
 
   // Edição de Data Flexível de Pagamento
   const [editingDueDate, setEditingDueDate] = useState(false);
@@ -254,7 +259,23 @@ export default function PassengerPortal() {
       .reduce((acc, r) => acc + Number(r.amount || 0), 0);
   }, [payableRides, selectedRideIds]);
 
-  // Ao abrir o modal, pré-seleciona todas as corridas se nenhuma estiver selecionada
+  // Cálculo da taxa de Cartão de Crédito (+10%)
+  const cardFeePercent = 0.10;
+  const cardFeeAmount = selectedRidesTotal * cardFeePercent;
+  const finalAmountToPay = paymentMethod === "cartao" ? (selectedRidesTotal + cardFeeAmount) : selectedRidesTotal;
+
+  // Cálculo de Pagamento em Dinheiro e Saldo / Crédito
+  const parsedCashPaid = parseFloat(cashAmountPaid.replace(",", ".")) || 0;
+  const cashSurplusBalance = parsedCashPaid > selectedRidesTotal ? (parsedCashPaid - selectedRidesTotal) : 0;
+
+  // Crédito / Saldo Acumulado do Passageiro (calculado a partir de faturas com crédito pendente)
+  const clientCreditBalance = useMemo(() => {
+    return rides
+      .filter((r) => r.status === "faturada" && r.origin === "Crédito Pago em Dinheiro" && Number(r.amount) < 0)
+      .reduce((acc, r) => acc + Math.abs(Number(r.amount)), 0);
+  }, [rides]);
+
+  // Ao abrir o modal, pré-seleciona todas as corridas se nenhuma estiver selecionada e inicializa o valor em dinheiro
   useEffect(() => {
     if (isPayModalOpen) {
       if (payableRides.length > 0) {
@@ -262,6 +283,7 @@ export default function PassengerPortal() {
       } else {
         setSelectedRideIds([]);
       }
+      setCashAmountPaid("");
     }
   }, [isPayModalOpen]);
 
@@ -538,6 +560,240 @@ export default function PassengerPortal() {
     }
   }
 
+  // Solicitação de Link de Pagamento via Cartão de Crédito (+10%) pelo WhatsApp
+  async function handleRequestCardLink() {
+    if (!client || !statement) return;
+
+    if (selectedRideIds.length === 0) {
+      alert("Por favor, selecione pelo menos uma corrida para solicitar o link de pagamento.");
+      return;
+    }
+
+    setRequestingCardLink(true);
+    try {
+      // 1. Atualiza as corridas selecionadas para estarem vinculadas a esta fatura
+      await supabase
+        .from("rides")
+        .update({ statement_id: statement.id })
+        .in("id", selectedRideIds);
+
+      // 2. Atualiza a fatura atual com o valor COM ACRÉSCIMO DE 10% e o identificador de cartão no receipt_url
+      await supabase
+        .from("monthly_statements")
+        .update({
+          total_amount: finalAmountToPay,
+          rides_count: selectedRideIds.length,
+          status: "pendente_conferencia",
+          receipt_url: "cartao_credito",
+        })
+        .eq("id", statement.id);
+
+      // 3. Se sobraram corridas não selecionadas, cria ou garante uma nova fatura 'em_aberto' para elas
+      const remainingRides = currentStatementRides.filter(
+        (r) => !selectedRideIds.includes(r.id)
+      );
+
+      if (remainingRides.length > 0) {
+        const dueDay = client.billing_due_day || 10;
+        const now = new Date();
+        const initialDueDate = `${format(now, "yyyy-MM")}-${String(dueDay).padStart(2, "0")}`;
+
+        const { data: newOpenStmt } = await supabase
+          .from("monthly_statements")
+          .insert({
+            client_id: client.id,
+            reference_month: statement.reference_month || format(now, "yyyy-MM"),
+            due_date: client.preferred_due_date || initialDueDate,
+            total_amount: remainingRides.reduce((acc, r) => acc + Number(r.amount || 0), 0),
+            rides_count: remainingRides.length,
+            status: "em_aberto",
+          })
+          .select()
+          .single();
+
+        if (newOpenStmt) {
+          await supabase
+            .from("rides")
+            .update({ statement_id: newOpenStmt.id })
+            .in("id", remainingRides.map((r) => r.id));
+        }
+      }
+
+      setStatement({
+        ...statement,
+        total_amount: finalAmountToPay,
+        rides_count: selectedRideIds.length,
+        status: "pendente_conferencia",
+        receipt_url: "cartao_credito",
+      });
+
+      // 4. Monta mensagem formatada solicitando o link de cartão
+      const driverName = settings?.driver_name || "Motorista";
+      const totalCorridasFmt = formatCurrency(selectedRidesTotal);
+      const taxaFmt = formatCurrency(cardFeeAmount);
+      const totalFinalFmt = formatCurrency(finalAmountToPay);
+      const qtdViagens = selectedRideIds.length;
+
+      const msg = `Olá, ${driverName}! 👋\n\n` +
+        `Aqui é *${client.name}* do Seven Private Drive.\n` +
+        `Fechei minha fatura com a opção de pagamento via *Cartão de Crédito* referente a *${qtdViagens} viagem(ns)*.\n\n` +
+        `📊 *Detalhamento do Valor:*\n` +
+        `• Subtotal das Corridas: ${totalCorridasFmt}\n` +
+        `• Taxa Cartão (+10%): ${taxaFmt}\n` +
+        `• *Total a Pagar no Cartão: ${totalFinalFmt}*\n\n` +
+        `Por favor, me envie o *link de pagamento do cartão* por aqui para eu efetuar o acerto! 💳📲`;
+
+      // Telefone do motorista
+      let rawPhone = "";
+      if (settings?.pix_key_type === "Celular" && settings?.pix_key) {
+        rawPhone = settings.pix_key.replace(/\D/g, "");
+      }
+      if (!rawPhone) {
+        rawPhone = "82988883740";
+      }
+      const phoneWithDDI = rawPhone.startsWith("55") ? rawPhone : `55${rawPhone}`;
+
+      const whatsappUrl = `https://api.whatsapp.com/send?phone=${phoneWithDDI}&text=${encodeURIComponent(msg)}`;
+
+      // Abre WhatsApp
+      window.open(whatsappUrl, "_blank");
+
+      setIsPayModalOpen(false);
+      loadPortalData();
+    } catch (err) {
+      console.error("Erro ao solicitar link de cartão:", err);
+      alert("Erro ao processar solicitação de cartão. Tente novamente.");
+    } finally {
+      setRequestingCardLink(false);
+    }
+  }
+
+  // Notificação de Pagamento em Dinheiro (com suporte a valor maior / troco / saldo para próximas corridas)
+  async function handleNotifyCashPayment() {
+    if (!client || !statement) return;
+
+    if (selectedRideIds.length === 0) {
+      alert("Por favor, selecione pelo menos uma corrida para fechar o pagamento em dinheiro.");
+      return;
+    }
+
+    const valorEntregue = parsedCashPaid > 0 ? parsedCashPaid : selectedRidesTotal;
+
+    if (valorEntregue < selectedRidesTotal) {
+      alert(`O valor entregue em dinheiro (${formatCurrency(valorEntregue)}) não pode ser menor que o total selecionado (${formatCurrency(selectedRidesTotal)}). Para pagar menos, desmarque algumas corridas.`);
+      return;
+    }
+
+    setSendingCashPayment(true);
+    try {
+      // 1. Atualiza as corridas selecionadas para estarem vinculadas a esta fatura
+      await supabase
+        .from("rides")
+        .update({ statement_id: statement.id })
+        .in("id", selectedRideIds);
+
+      // Metadados no receipt_url para identificação pelo gestor
+      // Formato: "dinheiro:pago=50:devido=30:saldo=20"
+      const surplus = valorEntregue - selectedRidesTotal;
+      const cashReceiptMeta = `dinheiro:pago=${valorEntregue.toFixed(2)}:devido=${selectedRidesTotal.toFixed(2)}:saldo=${surplus.toFixed(2)}`;
+
+      // 2. Atualiza a fatura com o valor exato entregue e status pendente
+      await supabase
+        .from("monthly_statements")
+        .update({
+          total_amount: valorEntregue,
+          rides_count: selectedRideIds.length,
+          status: "pendente_conferencia",
+          receipt_url: cashReceiptMeta,
+        })
+        .eq("id", statement.id);
+
+      // 3. Se sobraram corridas não selecionadas, cria ou garante uma nova fatura 'em_aberto' para elas
+      const remainingRides = currentStatementRides.filter(
+        (r) => !selectedRideIds.includes(r.id)
+      );
+
+      if (remainingRides.length > 0) {
+        const dueDay = client.billing_due_day || 10;
+        const now = new Date();
+        const initialDueDate = `${format(now, "yyyy-MM")}-${String(dueDay).padStart(2, "0")}`;
+
+        const { data: newOpenStmt } = await supabase
+          .from("monthly_statements")
+          .insert({
+            client_id: client.id,
+            reference_month: statement.reference_month || format(now, "yyyy-MM"),
+            due_date: client.preferred_due_date || initialDueDate,
+            total_amount: remainingRides.reduce((acc, r) => acc + Number(r.amount || 0), 0),
+            rides_count: remainingRides.length,
+            status: "em_aberto",
+          })
+          .select()
+          .single();
+
+        if (newOpenStmt) {
+          await supabase
+            .from("rides")
+            .update({ statement_id: newOpenStmt.id })
+            .in("id", remainingRides.map((r) => r.id));
+        }
+      }
+
+      setStatement({
+        ...statement,
+        total_amount: valorEntregue,
+        rides_count: selectedRideIds.length,
+        status: "pendente_conferencia",
+        receipt_url: cashReceiptMeta,
+      });
+
+      // 4. Monta mensagem formatada de aviso de pagamento em dinheiro para o WhatsApp
+      const driverName = settings?.driver_name || "Motorista";
+      const totalCorridasFmt = formatCurrency(selectedRidesTotal);
+      const valorEntregueFmt = formatCurrency(valorEntregue);
+      const saldoFmt = formatCurrency(surplus);
+      const qtdViagens = selectedRideIds.length;
+
+      let msg = `Olá, ${driverName}! 👋\n\n` +
+        `Aqui é *${client.name}* do Seven Private Drive.\n` +
+        `Estou realizando o pagamento em *Dinheiro Físico* referente a *${qtdViagens} viagem(ns)*.\n\n` +
+        `💵 *Detalhamento:*\n` +
+        `• Total devido das corridas: ${totalCorridasFmt}\n` +
+        `• *Valor pago em dinheiro: ${valorEntregueFmt}*\n`;
+
+      if (surplus > 0) {
+        msg += `• *Saldo/Crédito a meu favor para próximas corridas: ${saldoFmt}* 🪙✨\n\n`;
+      } else {
+        msg += `• Valor exato sem troco.\n\n`;
+      }
+
+      msg += `Por favor, confira o recebimento em mãos e dê a baixa no sistema! 🤝`;
+
+      // Telefone do motorista
+      let rawPhone = "";
+      if (settings?.pix_key_type === "Celular" && settings?.pix_key) {
+        rawPhone = settings.pix_key.replace(/\D/g, "");
+      }
+      if (!rawPhone) {
+        rawPhone = "82988883740";
+      }
+      const phoneWithDDI = rawPhone.startsWith("55") ? rawPhone : `55${rawPhone}`;
+
+      const whatsappUrl = `https://api.whatsapp.com/send?phone=${phoneWithDDI}&text=${encodeURIComponent(msg)}`;
+
+      // Abre WhatsApp
+      window.open(whatsappUrl, "_blank");
+
+      setIsPayModalOpen(false);
+      loadPortalData();
+    } catch (err) {
+      console.error("Erro ao registrar pagamento em dinheiro:", err);
+      alert("Erro ao processar pagamento em dinheiro. Tente novamente.");
+    } finally {
+      setSendingCashPayment(false);
+    }
+  }
+
   // Calendário
   const monthStart = startOfMonth(currentMonth);
   const monthEnd = endOfMonth(currentMonth);
@@ -639,14 +895,29 @@ export default function PassengerPortal() {
               <span className="text-xs uppercase font-medium tracking-wider text-zinc-400 flex items-center gap-1.5">
                 <DollarSign className="w-3.5 h-3.5 text-primary" /> Total em Aberto
               </span>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-surface border border-border text-zinc-400">
-                Ciclo Atual
-              </span>
+              <div className="flex items-center gap-2">
+                {clientCreditBalance > 0 && (
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-bold flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-emerald-400" />
+                    Crédito: {formatCurrency(clientCreditBalance)}
+                  </span>
+                )}
+                <span className="text-xs px-2 py-0.5 rounded-full bg-surface border border-border text-zinc-400">
+                  Ciclo Atual
+                </span>
+              </div>
             </div>
 
             <div className="text-3xl font-extrabold text-white tracking-tight mb-2">
               {formatCurrency(totalOwed)}
             </div>
+
+            {clientCreditBalance > 0 && (
+              <div className="mb-2 p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300 flex items-center justify-between">
+                <span>Saldo positivo acumulado em dinheiro:</span>
+                <span className="font-extrabold text-sm">{formatCurrency(clientCreditBalance)}</span>
+              </div>
+            )}
 
             <div className="flex flex-wrap items-center justify-between text-xs text-zinc-400 pt-2 border-t border-border/60 gap-2">
               <div className="flex items-center gap-3">
@@ -1187,14 +1458,14 @@ export default function PassengerPortal() {
         </div>
       )}
 
-      {/* MODAL: PAGAR FATURA VIA PIX E ENVIAR COMPROVANTE */}
+      {/* MODAL: PAGAR FATURA VIA PIX, CARTÃO OU DINHEIRO */}
       {isPayModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
           <div className="bg-card border border-border w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-border pb-3">
               <div>
-                <h3 className="text-base font-bold text-white">Pagamento Pix</h3>
-                <p className="text-xs text-zinc-400">Total a acertar: {formatCurrency(totalOwed)}</p>
+                <h3 className="text-base font-bold text-white">Fechar & Pagar Fatura</h3>
+                <p className="text-xs text-zinc-400">Total pendente: {formatCurrency(totalOwed)}</p>
               </div>
               <button
                 onClick={() => setIsPayModalOpen(false)}
@@ -1202,6 +1473,80 @@ export default function PassengerPortal() {
               >
                 ✕
               </button>
+            </div>
+
+            {/* SELETOR DE FORMA DE PAGAMENTO: PIX, CARTÃO OU DINHEIRO */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-zinc-300 block">
+                Escolha a Forma de Pagamento:
+              </label>
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setPaymentMethod("pix")}
+                  className={cn(
+                    "p-2.5 rounded-xl border text-left flex flex-col justify-between transition-all",
+                    paymentMethod === "pix"
+                      ? "bg-primary/15 border-primary text-white shadow-sm shadow-primary/20"
+                      : "bg-surface border-border text-zinc-400 hover:bg-zinc-800"
+                  )}
+                >
+                  <div className="flex items-center justify-between w-full">
+                    <span className="text-xs font-bold text-white flex items-center gap-1">
+                      <QrCode className="w-3 h-3 text-primary" /> Pix
+                    </span>
+                    {paymentMethod === "pix" && (
+                      <CheckCircle2 className="w-3 h-3 text-primary" />
+                    )}
+                  </div>
+                  <span className="text-[10px] text-zinc-300 mt-1">Normal</span>
+                  <span className="text-[9px] text-emerald-400 font-semibold">Sem taxa</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPaymentMethod("cartao")}
+                  className={cn(
+                    "p-2.5 rounded-xl border text-left flex flex-col justify-between transition-all",
+                    paymentMethod === "cartao"
+                      ? "bg-amber-500/15 border-amber-500 text-white shadow-sm shadow-amber-500/20"
+                      : "bg-surface border-border text-zinc-400 hover:bg-zinc-800"
+                  )}
+                >
+                  <div className="flex items-center justify-between w-full">
+                    <span className="text-xs font-bold text-white flex items-center gap-1">
+                      <CreditCard className="w-3 h-3 text-amber-400" /> Cartão
+                    </span>
+                    {paymentMethod === "cartao" && (
+                      <CheckCircle2 className="w-3 h-3 text-amber-400" />
+                    )}
+                  </div>
+                  <span className="text-[10px] text-zinc-300 mt-1">Crédito</span>
+                  <span className="text-[9px] text-amber-400 font-semibold">+10% taxa</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPaymentMethod("dinheiro")}
+                  className={cn(
+                    "p-2.5 rounded-xl border text-left flex flex-col justify-between transition-all",
+                    paymentMethod === "dinheiro"
+                      ? "bg-emerald-500/15 border-emerald-500 text-white shadow-sm shadow-emerald-500/20"
+                      : "bg-surface border-border text-zinc-400 hover:bg-zinc-800"
+                  )}
+                >
+                  <div className="flex items-center justify-between w-full">
+                    <span className="text-xs font-bold text-white flex items-center gap-1">
+                      <Banknote className="w-3 h-3 text-emerald-400" /> Dinheiro
+                    </span>
+                    {paymentMethod === "dinheiro" && (
+                      <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                    )}
+                  </div>
+                  <span className="text-[10px] text-zinc-300 mt-1">Espécie</span>
+                  <span className="text-[9px] text-emerald-400 font-semibold">Gera saldo</span>
+                </button>
+              </div>
             </div>
 
             {/* Seleção de Corridas para Pagamento Parcial */}
@@ -1235,7 +1580,7 @@ export default function PassengerPortal() {
               </div>
 
               {/* Lista com scroll das corridas */}
-              <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1 divide-y divide-border/40">
+              <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1 divide-y divide-border/40">
                 {payableRides.map((ride) => {
                   const isSelected = selectedRideIds.includes(ride.id);
                   return (
@@ -1280,106 +1625,278 @@ export default function PassengerPortal() {
               </div>
 
               {/* Resumo do Valor a Pagar */}
-              <div className="pt-2 border-t border-border flex items-center justify-between text-xs">
-                <span className="text-zinc-400">Subtotal selecionado:</span>
-                <span className="text-base font-extrabold text-primary">
-                  {formatCurrency(selectedRidesTotal)}
-                </span>
+              <div className="pt-2 border-t border-border space-y-1.5 text-xs">
+                <div className="flex items-center justify-between text-zinc-400">
+                  <span>Subtotal das Corridas:</span>
+                  <span className="font-semibold text-white">{formatCurrency(selectedRidesTotal)}</span>
+                </div>
+
+                {paymentMethod === "cartao" && (
+                  <div className="flex items-center justify-between text-amber-400">
+                    <span className="flex items-center gap-1">
+                      <span>Acréscimo Cartão de Crédito (+10%):</span>
+                    </span>
+                    <span className="font-semibold">+{formatCurrency(cardFeeAmount)}</span>
+                  </div>
+                )}
+
+                <div className="pt-1.5 border-t border-border/60 flex items-center justify-between">
+                  <span className="font-bold text-white">
+                    {paymentMethod === "cartao"
+                      ? "Total no Cartão de Crédito:"
+                      : paymentMethod === "dinheiro"
+                      ? "Total das Corridas:"
+                      : "Total no Pix:"}
+                  </span>
+                  <span className={cn(
+                    "text-base font-extrabold",
+                    paymentMethod === "cartao"
+                      ? "text-amber-400"
+                      : paymentMethod === "dinheiro"
+                      ? "text-emerald-400"
+                      : "text-primary"
+                  )}>
+                    {formatCurrency(finalAmountToPay)}
+                  </span>
+                </div>
               </div>
             </div>
 
-            {/* QR Code */}
-            {selectedRideIds.length > 0 && qrCodeDataUrl ? (
-              <div className="flex flex-col items-center p-4 bg-white rounded-xl shadow-inner mx-auto w-fit">
-                <img src={qrCodeDataUrl} alt="QR Code Pix" className="w-44 h-44" />
-                <span className="text-[10px] text-zinc-700 font-semibold mt-1">Escaneie com seu app de banco</span>
-              </div>
-            ) : selectedRideIds.length === 0 ? (
-              <div className="text-center py-4 bg-surface/50 border border-border rounded-xl text-zinc-400 text-xs">
-                Selecione ao menos 1 corrida acima para gerar o pagamento.
-              </div>
-            ) : (
-              <div className="text-center py-4 text-zinc-400 text-xs">Gerando QR Code...</div>
+            {/* SEÇÃO CONDICIONAL: PAGAMENTO VIA PIX */}
+            {paymentMethod === "pix" && (
+              <>
+                {/* QR Code */}
+                {selectedRideIds.length > 0 && qrCodeDataUrl ? (
+                  <div className="flex flex-col items-center p-4 bg-white rounded-xl shadow-inner mx-auto w-fit">
+                    <img src={qrCodeDataUrl} alt="QR Code Pix" className="w-44 h-44" />
+                    <span className="text-[10px] text-zinc-700 font-semibold mt-1">Escaneie com seu app de banco</span>
+                  </div>
+                ) : selectedRideIds.length === 0 ? (
+                  <div className="text-center py-4 bg-surface/50 border border-border rounded-xl text-zinc-400 text-xs">
+                    Selecione ao menos 1 corrida acima para gerar o pagamento.
+                  </div>
+                ) : (
+                  <div className="text-center py-4 text-zinc-400 text-xs">Gerando QR Code...</div>
+                )}
+
+                {/* Chave Pix e Copia e Cola */}
+                <div className="bg-surface border border-border rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-zinc-400">Chave Pix ({settings?.pix_key_type || "Chave"}):</span>
+                    <span className="font-semibold text-white truncate max-w-[200px]">{settings?.pix_key}</span>
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      if (settings?.pix_key) {
+                        navigator.clipboard.writeText(settings.pix_key);
+                        setCopySuccess(true);
+                        setTimeout(() => setCopySuccess(false), 2500);
+                      }
+                    }}
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-card border border-border hover:bg-zinc-800 text-xs font-semibold text-white transition-all"
+                  >
+                    <Copy className="w-3.5 h-3.5 text-primary" />
+                    <span>{copySuccess ? "Copiado com sucesso!" : "Copiar Chave Pix"}</span>
+                  </button>
+                </div>
+
+                {/* Finalização do Pagamento: WhatsApp ou Anexo Direto */}
+                <div className="bg-surface border border-zinc-700/80 rounded-xl p-4 space-y-3.5">
+                  <div className="text-center">
+                    <FileCheck className="w-7 h-7 text-primary mx-auto mb-1" />
+                    <p className="text-xs font-bold text-white">Já realizou o Pix?</p>
+                    <p className="text-[11px] text-zinc-400">
+                      Finalize avisando pelo WhatsApp ou anexando o arquivo diretamente.
+                    </p>
+                  </div>
+
+                  {/* Botão de Destaque: Enviar Comprovante via WhatsApp */}
+                  <button
+                    type="button"
+                    onClick={handleNotifyWhatsApp}
+                    disabled={sendingWhatsApp || selectedRideIds.length === 0}
+                    className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-zinc-950 font-bold text-xs shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-50"
+                  >
+                    <MessageCircle className="w-4 h-4 fill-zinc-950" />
+                    <span>
+                      {sendingWhatsApp
+                        ? "Registrando e abrindo WhatsApp..."
+                        : "Enviar Comprovante via WhatsApp"}
+                    </span>
+                  </button>
+                  <p className="text-[10px] text-zinc-400 text-center">
+                    Abre seu WhatsApp com a mensagem pronta de confirmação para o motorista dar a baixa.
+                  </p>
+
+                  {/* Divisor Ou */}
+                  <div className="flex items-center gap-2 my-1">
+                    <div className="h-px bg-border/80 flex-1"></div>
+                    <span className="text-[10px] text-zinc-500 uppercase font-semibold">ou se preferir</span>
+                    <div className="h-px bg-border/80 flex-1"></div>
+                  </div>
+
+                  {/* Opção secundária: Anexar Comprovante na Galeria / Arquivo */}
+                  <div className="flex flex-col items-center">
+                    <label className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-card hover:bg-zinc-800 border border-border text-zinc-300 font-semibold text-xs rounded-xl cursor-pointer transition-all w-full">
+                      <Upload className="w-3.5 h-3.5 text-primary" />
+                      <span>{uploadingReceipt ? "Enviando arquivo..." : "Anexar Comprovante do Aparelho"}</span>
+                      <input
+                        type="file"
+                        accept="image/*,application/pdf"
+                        disabled={uploadingReceipt || selectedRideIds.length === 0}
+                        onChange={handleUploadReceipt}
+                        className="hidden"
+                      />
+                    </label>
+
+                    {receiptSuccess && (
+                      <p className="text-xs text-emerald-400 font-semibold animate-fade-in mt-2">
+                        ✓ Comprovante enviado com sucesso! Aguarde a validação.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </>
             )}
 
-            {/* Chave Pix e Copia e Cola */}
-            <div className="bg-surface border border-border rounded-xl p-3 space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-zinc-400">Chave Pix ({settings?.pix_key_type || "Chave"}):</span>
-                <span className="font-semibold text-white truncate max-w-[200px]">{settings?.pix_key}</span>
-              </div>
+            {/* SEÇÃO CONDICIONAL: PAGAMENTO VIA CARTÃO DE CRÉDITO */}
+            {paymentMethod === "cartao" && (
+              <div className="bg-surface border border-amber-500/30 rounded-xl p-4 space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 shrink-0">
+                    <CreditCard className="w-6 h-6" />
+                  </div>
+                  <div className="text-xs">
+                    <h4 className="font-bold text-white text-sm">Pagamento por Cartão</h4>
+                    <p className="text-zinc-400 mt-1 leading-relaxed">
+                      Ao selecionar o cartão de crédito, é acrescido <strong className="text-amber-400">10%</strong> sobre o valor das viagens.
+                    </p>
+                    <p className="text-zinc-400 mt-1.5 leading-relaxed">
+                      O sistema enviará a solicitação para o WhatsApp do motorista, que gerará o <strong className="text-white">link de pagamento</strong> exclusivo e enviará para você concluir o acerto com total segurança.
+                    </p>
+                  </div>
+                </div>
 
-              <button
-                onClick={() => {
-                  if (settings?.pix_key) {
-                    navigator.clipboard.writeText(settings.pix_key);
-                    setCopySuccess(true);
-                    setTimeout(() => setCopySuccess(false), 2500);
-                  }
-                }}
-                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-card border border-border hover:bg-zinc-800 text-xs font-semibold text-white transition-all"
-              >
-                <Copy className="w-3.5 h-3.5 text-primary" />
-                <span>{copySuccess ? "Copiado com sucesso!" : "Copiar Chave Pix"}</span>
-              </button>
-            </div>
+                <div className="bg-card border border-border/80 rounded-xl p-3 space-y-1.5 text-xs">
+                  <div className="flex justify-between text-zinc-400">
+                    <span>Subtotal de viagens:</span>
+                    <span>{formatCurrency(selectedRidesTotal)}</span>
+                  </div>
+                  <div className="flex justify-between text-amber-400">
+                    <span>Taxa cartão (+10%):</span>
+                    <span>+{formatCurrency(cardFeeAmount)}</span>
+                  </div>
+                  <div className="flex justify-between font-bold text-white text-sm pt-1.5 border-t border-border">
+                    <span>Total a pagar no Cartão:</span>
+                    <span className="text-amber-400 font-extrabold">{formatCurrency(finalAmountToPay)}</span>
+                  </div>
+                </div>
 
-            {/* Finalização do Pagamento: WhatsApp ou Anexo Direto */}
-            <div className="bg-surface border border-zinc-700/80 rounded-xl p-4 space-y-3.5">
-              <div className="text-center">
-                <FileCheck className="w-7 h-7 text-primary mx-auto mb-1" />
-                <p className="text-xs font-bold text-white">Já realizou o Pix?</p>
-                <p className="text-[11px] text-zinc-400">
-                  Finalize avisando pelo WhatsApp ou anexando o arquivo diretamente.
+                {/* Botão de Ação: Solicitar Link de Cartão via WhatsApp */}
+                <button
+                  type="button"
+                  onClick={handleRequestCardLink}
+                  disabled={requestingCardLink || selectedRideIds.length === 0}
+                  className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-zinc-950 font-bold text-xs shadow-lg shadow-amber-500/20 transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  <MessageCircle className="w-4 h-4 fill-zinc-950" />
+                  <span>
+                    {requestingCardLink
+                      ? "Registrando e abrindo WhatsApp..."
+                      : "Solicitar Link de Cartão via WhatsApp"}
+                  </span>
+                </button>
+                <p className="text-[10px] text-zinc-400 text-center">
+                  Abre uma conversa no WhatsApp com os valores calculados para o motorista enviar seu link de cartão.
                 </p>
               </div>
+            )}
 
-              {/* Botão de Destaque: Enviar Comprovante via WhatsApp */}
-              <button
-                type="button"
-                onClick={handleNotifyWhatsApp}
-                disabled={sendingWhatsApp || selectedRideIds.length === 0}
-                className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-zinc-950 font-bold text-xs shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-50"
-              >
-                <MessageCircle className="w-4 h-4 fill-zinc-950" />
-                <span>
-                  {sendingWhatsApp
-                    ? "Registrando e abrindo WhatsApp..."
-                    : "Enviar Comprovante via WhatsApp"}
-                </span>
-              </button>
-              <p className="text-[10px] text-zinc-400 text-center">
-                Abre seu WhatsApp com a mensagem pronta de confirmação para o motorista dar a baixa.
-              </p>
+            {/* SEÇÃO CONDICIONAL: PAGAMENTO EM DINHEIRO */}
+            {paymentMethod === "dinheiro" && (
+              <div className="bg-surface border border-emerald-500/30 rounded-xl p-4 space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 shrink-0">
+                    <Banknote className="w-6 h-6" />
+                  </div>
+                  <div className="text-xs">
+                    <h4 className="font-bold text-white text-sm">Pagamento em Espécie / Dinheiro</h4>
+                    <p className="text-zinc-400 mt-1 leading-relaxed">
+                      Você pode entregar o valor exato ou um valor maior. Se pagar a mais, o troco fica registrado automaticamente como <strong className="text-emerald-400">saldo/crédito</strong> para suas próximas corridas!
+                    </p>
+                  </div>
+                </div>
 
-              {/* Divisor Ou */}
-              <div className="flex items-center gap-2 my-1">
-                <div className="h-px bg-border/80 flex-1"></div>
-                <span className="text-[10px] text-zinc-500 uppercase font-semibold">ou se preferir</span>
-                <div className="h-px bg-border/80 flex-1"></div>
+                {/* Input de Valor Entregue */}
+                <div className="bg-card border border-border/80 rounded-xl p-3.5 space-y-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
+                      Quanto você vai pagar em dinheiro? (R$)
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-2.5 text-zinc-400 text-xs font-bold">R$</span>
+                      <input
+                        type="text"
+                        placeholder={selectedRidesTotal.toFixed(2).replace(".", ",")}
+                        value={cashAmountPaid}
+                        onChange={(e) => setCashAmountPaid(e.target.value)}
+                        className="w-full bg-surface border border-border rounded-xl pl-9 pr-3 py-2 text-white text-sm font-bold focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <p className="text-[11px] text-zinc-400 mt-1">
+                      Mínimo para estas viagens: <strong className="text-white">{formatCurrency(selectedRidesTotal)}</strong>
+                    </p>
+                  </div>
+
+                  {/* Resumo do Cálculo e Saldo */}
+                  <div className="pt-2 border-t border-border/60 space-y-1.5 text-xs">
+                    <div className="flex justify-between text-zinc-400">
+                      <span>Total devido das viagens:</span>
+                      <span>{formatCurrency(selectedRidesTotal)}</span>
+                    </div>
+                    <div className="flex justify-between text-white font-semibold">
+                      <span>Valor entregue em dinheiro:</span>
+                      <span className="text-emerald-400 font-bold">
+                        {formatCurrency(parsedCashPaid > 0 ? parsedCashPaid : selectedRidesTotal)}
+                      </span>
+                    </div>
+
+                    {cashSurplusBalance > 0 && (
+                      <div className="p-2.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 mt-2 space-y-0.5">
+                        <div className="flex items-center justify-between font-bold">
+                          <span className="flex items-center gap-1">
+                            <Sparkles className="w-3.5 h-3.5" /> Saldo/Crédito a seu favor:
+                          </span>
+                          <span className="text-sm font-black">{formatCurrency(cashSurplusBalance)}</span>
+                        </div>
+                        <p className="text-[10px] text-emerald-400/90">
+                          Este valor de {formatCurrency(cashSurplusBalance)} ficará salvo no seu perfil para abater automaticamente nas suas próximas corridas!
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Botão de Finalizar Dinheiro via WhatsApp */}
+                <button
+                  type="button"
+                  onClick={handleNotifyCashPayment}
+                  disabled={sendingCashPayment || selectedRideIds.length === 0}
+                  className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-zinc-950 font-bold text-xs shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  <MessageCircle className="w-4 h-4 fill-zinc-950" />
+                  <span>
+                    {sendingCashPayment
+                      ? "Registrando e abrindo WhatsApp..."
+                      : "Avisar Pagamento em Dinheiro no WhatsApp"}
+                  </span>
+                </button>
+                <p className="text-[10px] text-zinc-400 text-center">
+                  O motorista receberá o aviso pelo WhatsApp para conferir e dar baixa com o saldo gerado.
+                </p>
               </div>
-
-              {/* Opção secundária: Anexar Comprovante na Galeria / Arquivo */}
-              <div className="flex flex-col items-center">
-                <label className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-card hover:bg-zinc-800 border border-border text-zinc-300 font-semibold text-xs rounded-xl cursor-pointer transition-all w-full">
-                  <Upload className="w-3.5 h-3.5 text-primary" />
-                  <span>{uploadingReceipt ? "Enviando arquivo..." : "Anexar Comprovante do Aparelho"}</span>
-                  <input
-                    type="file"
-                    accept="image/*,application/pdf"
-                    disabled={uploadingReceipt || selectedRideIds.length === 0}
-                    onChange={handleUploadReceipt}
-                    className="hidden"
-                  />
-                </label>
-
-                {receiptSuccess && (
-                  <p className="text-xs text-emerald-400 font-semibold animate-fade-in mt-2">
-                    ✓ Comprovante enviado com sucesso! Aguarde a validação.
-                  </p>
-                )}
-              </div>
-            </div>
+            )}
           </div>
         </div>
       )}

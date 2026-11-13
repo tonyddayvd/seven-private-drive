@@ -70,6 +70,8 @@ export default function PaymentAuditPage() {
   // Aprovar Baixa e Fechar Fatura
   async function handleApprovePayment(statementId: string, clientId: string) {
     try {
+      const stmt = statements.find((s) => s.id === statementId);
+
       // 1. Marca fatura como paga
       await supabase
         .from("monthly_statements")
@@ -85,7 +87,18 @@ export default function PaymentAuditPage() {
         .update({ status: "faturada" })
         .eq("statement_id", statementId);
 
-      // 3. Verifica se já existe uma fatura 'em_aberto' para este cliente (por exemplo, de corridas que sobraram no pagamento parcial)
+      // 3. Se foi pagamento em dinheiro com saldo/troco a favor do passageiro (ex: "dinheiro:pago=50:devido=30:saldo=20")
+      // Lança uma entrada de saldo/crédito na próxima fatura em aberto
+      let surplusAmount = 0;
+      if (stmt?.receipt_url && stmt.receipt_url.startsWith("dinheiro:")) {
+        const parts = stmt.receipt_url.split(":");
+        const saldoPart = parts.find((p) => p.startsWith("saldo="));
+        if (saldoPart) {
+          surplusAmount = parseFloat(saldoPart.replace("saldo=", "")) || 0;
+        }
+      }
+
+      // 4. Verifica se já existe uma fatura 'em_aberto' para este cliente
       const { data: existingOpen } = await supabase
         .from("monthly_statements")
         .select("id")
@@ -93,21 +106,43 @@ export default function PaymentAuditPage() {
         .eq("status", "em_aberto")
         .maybeSingle();
 
-      // Só cria uma nova fatura em aberto se não existir nenhuma
-      if (!existingOpen) {
+      let targetOpenStmtId = existingOpen?.id;
+
+      // Se não existir, cria a nova fatura em aberto
+      if (!targetOpenStmtId) {
         const client = clients.find((c) => c.id === clientId);
         const dueDay = client?.billing_due_day || 10;
         const nextMonth = new Date();
         nextMonth.setMonth(nextMonth.getMonth() + 1);
         const nextDue = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, "0")}-${String(dueDay).padStart(2, "0")}`;
 
-        await supabase.from("monthly_statements").insert({
+        const { data: newOpen } = await supabase.from("monthly_statements").insert({
           client_id: clientId,
           reference_month: `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, "0")}`,
           due_date: nextDue,
           total_amount: 0,
           rides_count: 0,
           status: "em_aberto",
+        }).select().single();
+
+        if (newOpen) {
+          targetOpenStmtId = newOpen.id;
+        }
+      }
+
+      // 5. Se gerou saldo em dinheiro (ex: troco de R$ 20), cria o registro de crédito no histórico do passageiro
+      if (surplusAmount > 0) {
+        const nowStr = new Date().toISOString().split("T")[0];
+        await supabase.from("rides").insert({
+          client_id: clientId,
+          statement_id: targetOpenStmtId || null,
+          ride_date: nowStr,
+          origin: "Crédito Pago em Dinheiro",
+          destination: "Saldo para Próximas Corridas",
+          amount: -surplusAmount, // Valor negativo abate automaticamente
+          status: "faturada",
+          created_by: "driver",
+          notes: `Crédito de troco pago a maior em dinheiro na fatura ${stmt?.reference_month || ""}`,
         });
       }
 
@@ -203,7 +238,53 @@ export default function PaymentAuditPage() {
                           Vencimento da fatura: {formatDateBR(stmt.due_date)}
                         </p>
 
-                        {stmt.receipt_url ? (
+                        {stmt.receipt_url?.startsWith("dinheiro:") ? (
+                          <div className="mt-2 flex flex-col gap-1">
+                            <span className="text-[11px] text-emerald-400 font-bold inline-flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg w-fit">
+                              💵 Pagamento em Dinheiro Físico
+                            </span>
+                            <div className="text-[11px] text-zinc-300 bg-card p-2 rounded-lg border border-border/60 max-w-sm space-y-0.5">
+                              {(() => {
+                                const parts = stmt.receipt_url.split(":");
+                                const pago = parts.find((p) => p.startsWith("pago="))?.replace("pago=", "") || "0";
+                                const devido = parts.find((p) => p.startsWith("devido="))?.replace("devido=", "") || "0";
+                                const saldo = parts.find((p) => p.startsWith("saldo="))?.replace("saldo=", "") || "0";
+                                const saldoNum = parseFloat(saldo);
+
+                                return (
+                                  <>
+                                    <div className="flex justify-between text-zinc-400">
+                                      <span>Total das viagens:</span>
+                                      <span>{formatCurrency(parseFloat(devido))}</span>
+                                    </div>
+                                    <div className="flex justify-between font-semibold text-white">
+                                      <span>Valor pago em dinheiro:</span>
+                                      <span className="text-emerald-400 font-bold">{formatCurrency(parseFloat(pago))}</span>
+                                    </div>
+                                    {saldoNum > 0 && (
+                                      <div className="flex justify-between font-bold text-emerald-300 pt-1 border-t border-border">
+                                        <span>Saldo a creditar ao passageiro:</span>
+                                        <span>+{formatCurrency(saldoNum)}</span>
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
+                            </div>
+                            <p className="text-[10px] text-zinc-400">
+                              Ao confirmar a baixa, o saldo a favor do passageiro será gerado automaticamente para abater as próximas corridas.
+                            </p>
+                          </div>
+                        ) : stmt.receipt_url === "cartao_credito" || stmt.receipt_url?.includes("cartao") ? (
+                          <div className="mt-2 flex flex-col gap-1">
+                            <span className="text-[11px] text-amber-400 font-bold inline-flex items-center gap-1.5 bg-amber-500/10 border border-amber-500/30 px-2.5 py-1 rounded-lg w-fit">
+                              💳 Pagamento via Cartão de Crédito (+10%)
+                            </span>
+                            <p className="text-[10px] text-zinc-400">
+                              O passageiro solicitou o link de pagamento do cartão pelo WhatsApp. Após receber o pagamento, dê a baixa abaixo.
+                            </p>
+                          </div>
+                        ) : stmt.receipt_url ? (
                           <div className="flex items-center gap-3 mt-2">
                             <button
                               type="button"
@@ -225,7 +306,7 @@ export default function PaymentAuditPage() {
                           </div>
                         ) : (
                           <span className="text-[11px] text-emerald-400 font-medium inline-flex items-center gap-1 mt-2 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
-                            💬 Enviado via WhatsApp / Aguardando conferência bancária
+                            💬 Pix informado via WhatsApp / Aguardando conferência bancária
                           </span>
                         )}
                       </div>
