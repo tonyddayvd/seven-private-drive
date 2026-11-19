@@ -67,6 +67,7 @@ export default function PassengerPortal() {
   // Modal de Pagamento Pix, Cartão de Crédito e Dinheiro
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<"pix" | "cartao" | "dinheiro">("pix");
+  const [pixAmountPaid, setPixAmountPaid] = useState("");
   const [cashAmountPaid, setCashAmountPaid] = useState("");
   const [sendingCashPayment, setSendingCashPayment] = useState(false);
   const [selectedRideIds, setSelectedRideIds] = useState<string[]>([]);
@@ -268,14 +269,19 @@ export default function PassengerPortal() {
   const parsedCashPaid = parseFloat(cashAmountPaid.replace(",", ".")) || 0;
   const cashSurplusBalance = parsedCashPaid > selectedRidesTotal ? (parsedCashPaid - selectedRidesTotal) : 0;
 
-  // Crédito / Saldo Acumulado do Passageiro (calculado a partir de faturas com crédito pendente)
+  // Cálculo de Pagamento em Pix e Saldo / Crédito (quando o passageiro paga a mais)
+  const parsedPixPaid = parseFloat(pixAmountPaid.replace(",", ".")) || 0;
+  const effectivePixAmount = parsedPixPaid > 0 ? parsedPixPaid : selectedRidesTotal;
+  const pixSurplusBalance = parsedPixPaid > selectedRidesTotal ? (parsedPixPaid - selectedRidesTotal) : 0;
+
+  // Crédito / Saldo Acumulado do Passageiro (calculado a partir de faturas com crédito pendente em Dinheiro ou Pix)
   const clientCreditBalance = useMemo(() => {
     return rides
-      .filter((r) => r.status === "faturada" && r.origin === "Crédito Pago em Dinheiro" && Number(r.amount) < 0)
+      .filter((r) => r.status === "faturada" && (r.origin === "Crédito Pago em Dinheiro" || r.origin === "Crédito Pago via Pix" || r.origin?.includes("Crédito")) && Number(r.amount) < 0)
       .reduce((acc, r) => acc + Math.abs(Number(r.amount)), 0);
   }, [rides]);
 
-  // Ao abrir o modal, pré-seleciona todas as corridas se nenhuma estiver selecionada e inicializa o valor em dinheiro
+  // Ao abrir o modal, pré-seleciona todas as corridas se nenhuma estiver selecionada e inicializa os valores
   useEffect(() => {
     if (isPayModalOpen) {
       if (payableRides.length > 0) {
@@ -284,21 +290,22 @@ export default function PassengerPortal() {
         setSelectedRideIds([]);
       }
       setCashAmountPaid("");
+      setPixAmountPaid("");
     }
   }, [isPayModalOpen]);
 
-  // Geração de QR Code Pix dinâmico com base no valor selecionado
+  // Geração de QR Code Pix dinâmico com base no valor efetivo (seja o valor fechado ou o valor maior digitado pelo passageiro)
   useEffect(() => {
-    if (isPayModalOpen && settings?.pix_key && selectedRidesTotal > 0) {
+    if (isPayModalOpen && settings?.pix_key && effectivePixAmount > 0) {
       // Simulação de payload Pix padrão para copia e cola
-      const pixPayload = `00020126360014BR.GOV.BCB.PIX0114${settings.pix_key}520400005303986540${selectedRidesTotal.toFixed(2)}5802BR5915${settings.driver_name || "Motorista"}6009SAO PAULO62070503***6304`;
+      const pixPayload = `00020126360014BR.GOV.BCB.PIX0114${settings.pix_key}520400005303986540${effectivePixAmount.toFixed(2)}5802BR5915${settings.driver_name || "Motorista"}6009SAO PAULO62070503***6304`;
       QRCode.toDataURL(pixPayload, { width: 260, margin: 2 })
         .then((url) => setQrCodeDataUrl(url))
         .catch((err) => console.error(err));
     } else {
       setQrCodeDataUrl("");
     }
-  }, [isPayModalOpen, settings, selectedRidesTotal]);
+  }, [isPayModalOpen, settings, effectivePixAmount]);
 
   // Ações
   async function handleCreateRide(e: React.FormEvent) {
@@ -387,18 +394,23 @@ export default function PassengerPortal() {
 
       const receiptUrl = publicUrlData.publicUrl;
 
+      // Se pagou via Pix a maior (com saldo positivo), anexa os metadados no receipt_url
+      const finalReceiptUrl = pixSurplusBalance > 0
+        ? `pix:pago=${effectivePixAmount.toFixed(2)}:devido=${selectedRidesTotal.toFixed(2)}:saldo=${pixSurplusBalance.toFixed(2)}|${receiptUrl}`
+        : receiptUrl;
+
       // 1. Atualiza as corridas selecionadas para estarem vinculadas a esta fatura
       await supabase
         .from("rides")
         .update({ statement_id: statement.id })
         .in("id", selectedRideIds);
 
-      // 2. Atualiza a fatura atual com o valor e quantidade EXATA das corridas selecionadas
+      // 2. Atualiza a fatura atual com o valor total pago (incluindo saldo a mais)
       await supabase
         .from("monthly_statements")
         .update({
-          receipt_url: receiptUrl,
-          total_amount: selectedRidesTotal,
+          receipt_url: finalReceiptUrl,
+          total_amount: effectivePixAmount,
           rides_count: selectedRideIds.length,
           status: "pendente_conferencia",
         })
@@ -439,8 +451,8 @@ export default function PassengerPortal() {
 
       setStatement({
         ...statement,
-        receipt_url: receiptUrl,
-        total_amount: selectedRidesTotal,
+        receipt_url: finalReceiptUrl,
+        total_amount: effectivePixAmount,
         rides_count: selectedRideIds.length,
         status: "pendente_conferencia",
       });
@@ -476,13 +488,19 @@ export default function PassengerPortal() {
         .update({ statement_id: statement.id })
         .in("id", selectedRideIds);
 
-      // 2. Atualiza a fatura atual com o valor e quantidade EXATA das corridas selecionadas para 'pendente_conferencia'
+      // Metadados caso o Pix tenha sido efetuado com valor maior
+      const pixReceiptMeta = pixSurplusBalance > 0
+        ? `pix:pago=${effectivePixAmount.toFixed(2)}:devido=${selectedRidesTotal.toFixed(2)}:saldo=${pixSurplusBalance.toFixed(2)}`
+        : null;
+
+      // 2. Atualiza a fatura atual com o valor efetivamente pago e status para 'pendente_conferencia'
       await supabase
         .from("monthly_statements")
         .update({
-          total_amount: selectedRidesTotal,
+          total_amount: effectivePixAmount,
           rides_count: selectedRideIds.length,
           status: "pendente_conferencia",
+          receipt_url: pixReceiptMeta,
         })
         .eq("id", statement.id);
 
@@ -519,20 +537,33 @@ export default function PassengerPortal() {
 
       setStatement({
         ...statement,
-        total_amount: selectedRidesTotal,
+        total_amount: effectivePixAmount,
         rides_count: selectedRideIds.length,
         status: "pendente_conferencia",
+        receipt_url: pixReceiptMeta,
       });
 
       // 4. Monta mensagem formatada para o WhatsApp
       const driverName = settings?.driver_name || "Motorista";
-      const totalFmt = formatCurrency(selectedRidesTotal);
+      const totalDevidoFmt = formatCurrency(selectedRidesTotal);
+      const totalPagoFmt = formatCurrency(effectivePixAmount);
+      const saldoFmt = formatCurrency(pixSurplusBalance);
       const qtdViagens = selectedRideIds.length;
       
-      const msg = `Olá, ${driverName}! 👋\n\n` +
+      let msg = `Olá, ${driverName}! 👋\n\n` +
         `Aqui é *${client.name}* do Seven Private Drive.\n` +
-        `Acabei de efetuar o pagamento Pix no valor de *${totalFmt}* referente a *${qtdViagens} viagem(ns)*.\n\n` +
-        `Estou enviando este aviso para você conferir e dar a baixa no sistema. Segue o comprovante em anexo nesta conversa! 📲`;
+        `Acabei de efetuar o pagamento Pix referente a *${qtdViagens} viagem(ns)*.\n\n` +
+        `📱 *Detalhamento do Pix:*\n` +
+        `• Total devido das corridas: ${totalDevidoFmt}\n` +
+        `• *Valor pago via Pix: ${totalPagoFmt}*\n`;
+
+      if (pixSurplusBalance > 0) {
+        msg += `• *Saldo/Crédito a meu favor para próximas corridas: ${saldoFmt}* 🪙✨\n\n`;
+      } else {
+        msg += `\n`;
+      }
+
+      msg += `Estou enviando este aviso para você conferir e dar a baixa no sistema. Segue o comprovante em anexo nesta conversa! 📲`;
 
       // Telefone do motorista (obtido de settings.pix_key se celular, ou padrão)
       let rawPhone = "";
@@ -1665,11 +1696,52 @@ export default function PassengerPortal() {
             {/* SEÇÃO CONDICIONAL: PAGAMENTO VIA PIX */}
             {paymentMethod === "pix" && (
               <>
+                {/* Opção de pagar valor maior no Pix e gerar saldo positivo */}
+                <div className="bg-surface border border-primary/30 rounded-xl p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-primary" /> Deseja pagar um valor maior via Pix?
+                    </label>
+                    <span className="text-[10px] text-zinc-400">Opcional</span>
+                  </div>
+
+                  <div className="relative">
+                    <span className="absolute left-3 top-2.5 text-zinc-400 text-xs font-bold">R$</span>
+                    <input
+                      type="text"
+                      placeholder={selectedRidesTotal.toFixed(2).replace(".", ",")}
+                      value={pixAmountPaid}
+                      onChange={(e) => setPixAmountPaid(e.target.value)}
+                      className="w-full bg-card border border-border rounded-xl pl-9 pr-3 py-2 text-white text-sm font-bold focus:border-primary focus:outline-none"
+                    />
+                  </div>
+
+                  {pixSurplusBalance > 0 ? (
+                    <div className="p-2.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 space-y-0.5">
+                      <div className="flex items-center justify-between font-bold text-xs">
+                        <span className="flex items-center gap-1">
+                          <Sparkles className="w-3.5 h-3.5" /> Saldo/Crédito a seu favor:
+                        </span>
+                        <span className="text-sm font-black">+{formatCurrency(pixSurplusBalance)}</span>
+                      </div>
+                      <p className="text-[10px] text-emerald-400/90">
+                        O QR Code abaixo foi atualizado para {formatCurrency(effectivePixAmount)}. O saldo de +{formatCurrency(pixSurplusBalance)} ficará salvo para abater nas suas próximas corridas!
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-zinc-400">
+                      Você pode pagar a mais para adiantar crédito no sistema. Valor normal: <strong className="text-white">{formatCurrency(selectedRidesTotal)}</strong>
+                    </p>
+                  )}
+                </div>
+
                 {/* QR Code */}
                 {selectedRideIds.length > 0 && qrCodeDataUrl ? (
                   <div className="flex flex-col items-center p-4 bg-white rounded-xl shadow-inner mx-auto w-fit">
                     <img src={qrCodeDataUrl} alt="QR Code Pix" className="w-44 h-44" />
-                    <span className="text-[10px] text-zinc-700 font-semibold mt-1">Escaneie com seu app de banco</span>
+                    <span className="text-[10px] text-zinc-700 font-bold mt-1">
+                      {formatCurrency(effectivePixAmount)} • Escaneie no banco
+                    </span>
                   </div>
                 ) : selectedRideIds.length === 0 ? (
                   <div className="text-center py-4 bg-surface/50 border border-border rounded-xl text-zinc-400 text-xs">

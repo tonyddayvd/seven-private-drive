@@ -87,14 +87,25 @@ export default function PaymentAuditPage() {
         .update({ status: "faturada" })
         .eq("statement_id", statementId);
 
-      // 3. Se foi pagamento em dinheiro com saldo/troco a favor do passageiro (ex: "dinheiro:pago=50:devido=30:saldo=20")
+      // 3. Se foi pagamento em dinheiro ou Pix com saldo/troco a favor do passageiro (ex: "dinheiro:pago=50:devido=30:saldo=20" ou "pix:pago=15:devido=10:saldo=5")
       // Lança uma entrada de saldo/crédito na próxima fatura em aberto
       let surplusAmount = 0;
-      if (stmt?.receipt_url && stmt.receipt_url.startsWith("dinheiro:")) {
-        const parts = stmt.receipt_url.split(":");
-        const saldoPart = parts.find((p) => p.startsWith("saldo="));
-        if (saldoPart) {
-          surplusAmount = parseFloat(saldoPart.replace("saldo=", "")) || 0;
+      let creditOrigin = "Crédito Pago em Dinheiro";
+      let creditNotes = `Crédito de troco pago a maior em dinheiro na fatura ${stmt?.reference_month || ""}`;
+
+      if (stmt?.receipt_url) {
+        if (stmt.receipt_url.startsWith("dinheiro:") || stmt.receipt_url.startsWith("pix:")) {
+          const isPix = stmt.receipt_url.startsWith("pix:");
+          const metaStr = isPix && stmt.receipt_url.includes("|") ? stmt.receipt_url.split("|")[0] : stmt.receipt_url;
+          const parts = metaStr.split(":");
+          const saldoPart = parts.find((p) => p.startsWith("saldo="));
+          if (saldoPart) {
+            surplusAmount = parseFloat(saldoPart.replace("saldo=", "")) || 0;
+            if (isPix) {
+              creditOrigin = "Crédito Pago via Pix";
+              creditNotes = `Crédito pago a mais via Pix na fatura ${stmt?.reference_month || ""}`;
+            }
+          }
         }
       }
 
@@ -130,19 +141,19 @@ export default function PaymentAuditPage() {
         }
       }
 
-      // 5. Se gerou saldo em dinheiro (ex: troco de R$ 20), cria o registro de crédito no histórico do passageiro
+      // 5. Se gerou saldo em dinheiro ou Pix (ex: R$ 5 a mais), cria o registro de crédito no histórico do passageiro
       if (surplusAmount > 0) {
         const nowStr = new Date().toISOString().split("T")[0];
         await supabase.from("rides").insert({
           client_id: clientId,
           statement_id: targetOpenStmtId || null,
           ride_date: nowStr,
-          origin: "Crédito Pago em Dinheiro",
+          origin: creditOrigin,
           destination: "Saldo para Próximas Corridas",
           amount: -surplusAmount, // Valor negativo abate automaticamente
           status: "faturada",
           created_by: "driver",
-          notes: `Crédito de troco pago a maior em dinheiro na fatura ${stmt?.reference_month || ""}`,
+          notes: creditNotes,
         });
       }
 
@@ -273,6 +284,57 @@ export default function PaymentAuditPage() {
                             </div>
                             <p className="text-[10px] text-zinc-400">
                               Ao confirmar a baixa, o saldo a favor do passageiro será gerado automaticamente para abater as próximas corridas.
+                            </p>
+                          </div>
+                        ) : stmt.receipt_url?.startsWith("pix:") ? (
+                          <div className="mt-2 flex flex-col gap-1">
+                            <span className="text-[11px] text-primary font-bold inline-flex items-center gap-1.5 bg-primary/10 border border-primary/30 px-2.5 py-1 rounded-lg w-fit">
+                              📱 Pagamento via Pix com Valor Maior
+                            </span>
+                            <div className="text-[11px] text-zinc-300 bg-card p-2 rounded-lg border border-border/60 max-w-sm space-y-0.5">
+                              {(() => {
+                                const metaStr = stmt.receipt_url?.includes("|") ? stmt.receipt_url.split("|")[0] : stmt.receipt_url;
+                                const fileUrl = stmt.receipt_url?.includes("|") ? stmt.receipt_url.split("|")[1] : null;
+                                const parts = (metaStr || "").split(":");
+                                const pago = parts.find((p) => p.startsWith("pago="))?.replace("pago=", "") || "0";
+                                const devido = parts.find((p) => p.startsWith("devido="))?.replace("devido=", "") || "0";
+                                const saldo = parts.find((p) => p.startsWith("saldo="))?.replace("saldo=", "") || "0";
+                                const saldoNum = parseFloat(saldo);
+
+                                return (
+                                  <>
+                                    <div className="flex justify-between text-zinc-400">
+                                      <span>Total das viagens:</span>
+                                      <span>{formatCurrency(parseFloat(devido))}</span>
+                                    </div>
+                                    <div className="flex justify-between font-semibold text-white">
+                                      <span>Valor pago via Pix:</span>
+                                      <span className="text-primary font-bold">{formatCurrency(parseFloat(pago))}</span>
+                                    </div>
+                                    {saldoNum > 0 && (
+                                      <div className="flex justify-between font-bold text-emerald-300 pt-1 border-t border-border">
+                                        <span>Saldo a creditar ao passageiro:</span>
+                                        <span>+{formatCurrency(saldoNum)}</span>
+                                      </div>
+                                    )}
+                                    {fileUrl && (
+                                      <div className="pt-1.5 mt-1 border-t border-border">
+                                        <button
+                                          type="button"
+                                          onClick={() => setPreviewReceiptUrl(fileUrl)}
+                                          className="text-xs text-primary font-semibold hover:underline flex items-center gap-1"
+                                        >
+                                          <Eye className="w-3.5 h-3.5" />
+                                          <span>Ver Comprovante Anexado</span>
+                                        </button>
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
+                            </div>
+                            <p className="text-[10px] text-zinc-400">
+                              Ao confirmar a baixa, o saldo pago a mais no Pix será creditado automaticamente ao passageiro.
                             </p>
                           </div>
                         ) : stmt.receipt_url === "cartao_credito" || stmt.receipt_url?.includes("cartao") ? (
