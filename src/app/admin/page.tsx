@@ -1581,8 +1581,10 @@ export default function AdminDashboard() {
                         </span>
                       </div>
                       {(() => {
+                        // Crédito pendente em aberto para o passageiro utilizar (ainda não compensado em faturas pagas)
+                        const openStmt = statements.find((s) => s.client_id === c.id && s.status === "em_aberto");
                         const creditSum = clientRides
-                          .filter((r) => r.status === "faturada" && (r.origin === "Crédito Pago em Dinheiro" || r.origin === "Crédito Pago via Pix" || r.origin?.includes("Crédito")) && Number(r.amount) < 0)
+                          .filter((r) => openStmt && r.statement_id === openStmt.id && (r.origin === "Crédito Pago em Dinheiro" || r.origin === "Crédito Pago via Pix" || r.origin?.includes("Crédito")) && Number(r.amount) < 0)
                           .reduce((acc, r) => acc + Math.abs(Number(r.amount)), 0);
                         if (creditSum <= 0) return null;
                         return (

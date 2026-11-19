@@ -274,12 +274,14 @@ export default function PassengerPortal() {
   const effectivePixAmount = parsedPixPaid > 0 ? parsedPixPaid : selectedRidesTotal;
   const pixSurplusBalance = parsedPixPaid > selectedRidesTotal ? (parsedPixPaid - selectedRidesTotal) : 0;
 
-  // Crédito / Saldo Acumulado do Passageiro (calculado a partir de faturas com crédito pendente em Dinheiro ou Pix)
+  // Crédito / Saldo Acumulado do Passageiro (apenas créditos que ainda NÃO foram utilizados em faturas pagas)
   const clientCreditBalance = useMemo(() => {
+    // Créditos disponíveis são aqueles vinculados à fatura em aberto atual ou sem fatura paga vinculada
+    if (!statement) return 0;
     return rides
-      .filter((r) => r.status === "faturada" && (r.origin === "Crédito Pago em Dinheiro" || r.origin === "Crédito Pago via Pix" || r.origin?.includes("Crédito")) && Number(r.amount) < 0)
+      .filter((r) => r.statement_id === statement.id && (r.origin === "Crédito Pago em Dinheiro" || r.origin === "Crédito Pago via Pix" || r.origin?.includes("Crédito")) && Number(r.amount) < 0)
       .reduce((acc, r) => acc + Math.abs(Number(r.amount)), 0);
-  }, [rides]);
+  }, [rides, statement]);
 
   // Ao abrir o modal, pré-seleciona todas as corridas se nenhuma estiver selecionada e inicializa os valores
   useEffect(() => {
